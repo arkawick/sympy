@@ -241,13 +241,13 @@ jobs:
         fi
       continue-on-error: true
 
-    # ====== STAGE 5: Enhanced AI Curation ======
+    # ====== STAGE 5: AI-Powered Curation Reports ======
     - name: Check AI curation prerequisites
       run: |
         echo "🔍 Checking prerequisites for AI curation..."
 
         echo "Checking required files:"
-        [ -f ort-results/analyzer/analyzer-result.yml ] && echo "  ✓ ORT results found" || echo "  ✗ ORT results missing"
+        [ -f ort-results/analyzer/analyzer-result.yml ] && echo "  ✓ ORT analyzer results found" || echo "  ✗ ORT analyzer results missing"
         [ -f uncertain-packages/uncertain-packages.json ] && echo "  ✓ Uncertain packages found" || echo "  ✗ Uncertain packages missing"
         [ -f ort-results/reporter/bom.spdx.yml ] && echo "  ✓ SPDX document found" || echo "  ✗ SPDX document missing"
 
@@ -259,45 +259,70 @@ jobs:
         AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
       continue-on-error: true
 
-    - name: Run enhanced AI curation
+    - name: Generate main ORT curation report
       env:
         AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
         AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
       run: |
-        echo "🤖 Stage 5: Running enhanced AI curation..."
+        echo "🤖 Stage 5a: Generating main ORT curation report..."
 
-        # Check if uncertain packages exist
-        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
-          echo "⚠️  No uncertain packages JSON found, creating success report..."
-          cat > curation-report-enhanced.html << 'EOF'
-<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>License Curation Report</title>
-<style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:20px;background:#f5f5f5;}
-.success{background:#d4edda;border:2px solid #28a745;padding:20px;border-radius:8px;}</style></head>
-<body><div class="success"><h1>✅ License Curation Report</h1>
-<p>No license conflicts or uncertain packages detected! All packages have clear license declarations.</p>
-<p><strong>Status:</strong> All dependencies are properly licensed.</p></div></body></html>
-EOF
-          echo "✅ Created success report"
+        # Check if ORT results exist
+        if [ ! -f ort-results/analyzer/analyzer-result.yml ]; then
+          echo "❌ ORT analyzer results not found!"
           exit 0
         fi
 
         # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+          echo "⚠️  AZURE_OPENAI_API_KEY not set, skipping AI report..."
+          exit 0
+        fi
+
+        # Run the original ORT curation script
+        echo "Running ort_curation_script_html.py..."
+        python3 ort_curation_script_html.py 2>&1 | tee ort-curation.log
+
+        # Check if report was generated
+        LATEST_REPORT=$(ls -t curation-report-*.html 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_REPORT" ] && [ -f "$LATEST_REPORT" ]; then
+          echo "✅ Main curation report generated: $LATEST_REPORT"
+          echo "   Size: $(wc -c < "$LATEST_REPORT") bytes"
+
+          # Create a consistent name for deployment
+          cp "$LATEST_REPORT" curation-report-main.html
+          echo "✅ Copied to curation-report-main.html for deployment"
+        else
+          echo "⚠️  No curation report generated, check ort-curation.log"
+          cat ort-curation.log || true
+        fi
+      continue-on-error: true
+
+    - name: Generate enhanced conflict analysis report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5b: Generating enhanced conflict analysis..."
+
+        # Only run if there are uncertain packages
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "✓ No uncertain packages found - skipping conflict analysis"
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to analyze"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT uncertain packages requiring analysis"
+
+        # Check Azure credentials
         if [ -z "$AZURE_OPENAI_API_KEY" ] || [ -z "$AZURE_OPENAI_ENDPOINT" ]; then
-          echo "⚠️  Azure OpenAI not configured, creating basic report..."
-          cat > curation-report-enhanced.html << 'EOF'
-<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>License Curation Report</title>
-<style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:20px;background:#f5f5f5;}
-.warning{background:#fff3cd;border:2px solid #ffc107;padding:20px;border-radius:8px;}</style></head>
-<body><div class="warning"><h1>⚠️ Basic License Curation Report</h1>
-<p><strong>AI Analysis Disabled:</strong> Azure OpenAI credentials not configured.</p>
-<p>To enable AI-powered curation, set these repository secrets:</p>
-<ul><li>AZURE_OPENAI_API_KEY</li><li>AZURE_OPENAI_ENDPOINT</li></ul>
-<p>See <a href="uncertain-packages-report.md">Uncertain Packages Report</a> for manual review items.</p>
-</div></body></html>
-EOF
-          echo "✅ Created basic report (AI disabled)"
+          echo "⚠️  Azure OpenAI not configured, skipping conflict analysis..."
           exit 0
         fi
 
@@ -310,25 +335,20 @@ EOF
           echo "Using original SPDX: $SPDX_INPUT"
         fi
 
-        # Run AI curation with error capture
-        echo "Running enhanced AI curation..."
+        # Run enhanced conflict analysis
+        echo "Running enhanced_ai_curation.py..."
         python3 enhanced_ai_curation.py \
           --ort-results ort-results/analyzer/analyzer-result.yml \
           --spdx-doc "$SPDX_INPUT" \
           --uncertain-packages uncertain-packages/uncertain-packages.json \
-          --output curation-report-enhanced.html 2>&1 | tee ai-curation.log || {
-            echo "❌ AI curation failed with exit code $?"
-            echo "Error log:"
-            cat ai-curation.log
-            exit 1
-          }
+          --output curation-report-conflicts.html 2>&1 | tee conflict-analysis.log
 
         # Verify output
-        if [ -f curation-report-enhanced.html ] && [ -s curation-report-enhanced.html ]; then
-          echo "✅ AI curation report generated ($(wc -c < curation-report-enhanced.html) bytes)"
+        if [ -f curation-report-conflicts.html ] && [ -s curation-report-conflicts.html ]; then
+          echo "✅ Conflict analysis report generated ($(wc -c < curation-report-conflicts.html) bytes)"
         else
-          echo "❌ Report file is empty or missing"
-          exit 1
+          echo "⚠️  Conflict analysis failed, check conflict-analysis.log"
+          cat conflict-analysis.log || true
         fi
       continue-on-error: true
 
@@ -348,14 +368,28 @@ EOF
           cp enhanced-spdx/bom-enhanced-fixed.spdx.json public/bom-enhanced.spdx.json
         fi
 
-        # Copy AI curation report
-        if [ -f curation-report-enhanced.html ]; then
-          cp curation-report-enhanced.html public/
+        # Copy AI curation reports
+        if [ -f curation-report-main.html ]; then
+          cp curation-report-main.html public/
+          echo "  ✓ Main ORT curation report"
+        fi
+
+        if [ -f curation-report-conflicts.html ]; then
+          cp curation-report-conflicts.html public/
+          echo "  ✓ Conflict analysis report"
+        fi
+
+        # Copy any timestamped reports too
+        if ls curation-report-*.html 1> /dev/null 2>&1; then
+          for report in curation-report-*.html; do
+            [ -f "$report" ] && cp "$report" public/ 2>/dev/null || true
+          done
         fi
 
         # Copy ScanCode merge report
         if [ -f enhanced-spdx/merge-report.md ]; then
           cp enhanced-spdx/merge-report.md public/
+          echo "  ✓ ScanCode merge report"
         fi
 
         # Copy uncertain packages report

@@ -12,7 +12,8 @@ def generate_landing_page(public_dir='public'):
 
     # Detect available files
     webapp_file = ''
-    ai_report = ''
+    ai_main_report = ''
+    ai_conflict_report = ''
     cyclonedx = ''
     spdx_enhanced = ''
     spdx_original = ''
@@ -23,8 +24,11 @@ def generate_landing_page(public_dir='public'):
         webapp_file = file.name
         break
 
-    if (public_path / 'curation-report-enhanced.html').exists():
-        ai_report = 'curation-report-enhanced.html'
+    if (public_path / 'curation-report-main.html').exists():
+        ai_main_report = 'curation-report-main.html'
+
+    if (public_path / 'curation-report-conflicts.html').exists():
+        ai_conflict_report = 'curation-report-conflicts.html'
 
     if (public_path / 'bom.cyclonedx.json').exists():
         cyclonedx = 'bom.cyclonedx.json'
@@ -40,7 +44,8 @@ def generate_landing_page(public_dir='public'):
 
     print(f"✅ Detected files:")
     print(f"  WebApp: {webapp_file or 'N/A'}")
-    print(f"  AI Report: {ai_report or 'N/A'}")
+    print(f"  AI Main Report: {ai_main_report or 'N/A'}")
+    print(f"  AI Conflict Report: {ai_conflict_report or 'N/A'}")
     print(f"  CycloneDX: {cyclonedx or 'N/A'}")
     print(f"  SPDX Enhanced: {spdx_enhanced or 'N/A'}")
     print(f"  SPDX Original: {spdx_original or 'N/A'}")
@@ -146,13 +151,23 @@ def generate_landing_page(public_dir='public'):
     <div class="report-grid">
 '''
 
-    # Add AI curation report
-    if ai_report:
+    # Add AI main curation report
+    if ai_main_report:
         html += f'''
-      <a href="{ai_report}" class="report-card highlight">
+      <a href="{ai_main_report}" class="report-card highlight">
         <div class="report-icon">🤖</div>
-        <div class="report-title">Enhanced AI Curation Report <span class="badge">NEW</span></div>
-        <div class="report-desc">Multi-tool AI analysis with ORT + ScanCode + SPDX validation</div>
+        <div class="report-title">AI Curation Report <span class="badge">PRIMARY</span></div>
+        <div class="report-desc">Comprehensive AI-powered ORT analysis and compliance recommendations</div>
+      </a>
+'''
+
+    # Add AI conflict analysis report
+    if ai_conflict_report:
+        html += f'''
+      <a href="{ai_conflict_report}" class="report-card highlight">
+        <div class="report-icon">⚠️</div>
+        <div class="report-title">License Conflict Analysis <span class="badge">ENHANCED</span></div>
+        <div class="report-desc">Multi-tool conflict resolution with ORT + ScanCode + AI recommendations</div>
       </a>
 '''
 
