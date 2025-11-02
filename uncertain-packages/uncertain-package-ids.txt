@@ -1,0 +1,12 @@
+PyPI::coverage:7.11.0
+PyPI::iniconfig:2.3.0
+PyPI::numpy:2.3.4
+PyPI::packaging:25.0
+PyPI::pluggy:1.6.0
+PyPI::pycutest:1.7.2
+PyPI::pygments:2.19.2
+PyPI::pytest:8.4.2
+PyPI::pytest-cov:7.0.0
+PyPI::pytest-order:1.3.0
+PyPI::scipy:1.16.3
+PyPI::setuptools:80.9.0

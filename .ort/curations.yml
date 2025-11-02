@@ -1,0 +1,66 @@
+# ORT Package Curation Database
+# This file contains manual license curations for packages where automated detection fails
+# or produces incorrect results. Curations are applied during ORT analysis.
+
+# Format documentation: https://github.com/oss-review-toolkit/ort/blob/main/docs/config-file-curations-yml.md
+
+curations:
+  # Example: Curation for package with missing license declaration
+  # - id: "NPM::example-package:1.0.0"
+  #   curations:
+  #     comment: "License verified from GitHub repository on 2025-01-15"
+  #     concluded_license: "MIT"
+  #     declared_license_mapping:
+  #       "NOASSERTION": "MIT"
+  #     homepage_url: "https://github.com/example/example-package"
+  #     vcs:
+  #       type: "Git"
+  #       url: "https://github.com/example/example-package.git"
+  #       revision: "v1.0.0"
+
+  # Example: Curation for package with incorrect license
+  # - id: "PyPI::wrong-license-pkg:2.3.1"
+  #   curations:
+  #     comment: "Package incorrectly declares GPL-3.0, but source files show Apache-2.0. Confirmed with maintainer via GitHub issue #123."
+  #     concluded_license: "Apache-2.0"
+  #     declared_license_mapping:
+  #       "GPL-3.0-only": "Apache-2.0"
+  #     source_artifact_url: "https://pypi.org/packages/source/w/wrong-license-pkg/wrong-license-pkg-2.3.1.tar.gz"
+
+  # Example: Multi-licensed package curation
+  # - id: "Maven:org.example:dual-license:1.0"
+  #   curations:
+  #     comment: "Package is dual-licensed MIT OR Apache-2.0. We choose MIT for our project."
+  #     concluded_license: "MIT"
+  #     declared_license_mapping:
+  #       "NOASSERTION": "MIT OR Apache-2.0"
+
+  # Example: Package with custom/non-standard license
+  # - id: "NPM::custom-license:3.0.0"
+  #   curations:
+  #     comment: "Package uses custom license similar to BSD-3-Clause with additional attribution requirement. Confirmed compatible with our usage."
+  #     concluded_license: "LicenseRef-CustomBSD"
+  #     declared_license_mapping:
+  #       "UNKNOWN": "LicenseRef-CustomBSD"
+  #     declared_licenses:
+  #       - "LicenseRef-CustomBSD"
+
+  # =============================================================================
+  # ADD YOUR CURATIONS BELOW THIS LINE
+  # =============================================================================
+
+  # Template for new curations:
+  # - id: "TYPE::NAMESPACE:NAME:VERSION"  # e.g., "NPM::example:1.0.0" or "PyPI::requests:2.28.0"
+  #   curations:
+  #     comment: "Explanation of why this curation is needed and verification method"
+  #     concluded_license: "SPDX-License-Expression"  # e.g., "MIT", "Apache-2.0", "MIT OR GPL-2.0"
+  #     declared_license_mapping:
+  #       "INCORRECT-LICENSE": "CORRECT-LICENSE"
+  #       "NOASSERTION": "CORRECT-LICENSE"
+  #     # Optional fields:
+  #     homepage_url: "https://..."
+  #     source_artifact_url: "https://..."
+  #     vcs:
+  #       type: "Git"
+  #       url: "https://github.com/..."
+  #       revision: "tag-or-commit"

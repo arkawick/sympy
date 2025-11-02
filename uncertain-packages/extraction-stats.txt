@@ -1,0 +1,9 @@
+=== License Extraction Statistics ===
+
+Total packages analyzed: 12
+Packages with uncertain licenses: 12
+  - No declared license: 2
+  - No concluded license: 12
+  - No license info at all: 2
+
+Coverage: 0.0% packages have clear licenses
