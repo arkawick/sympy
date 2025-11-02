@@ -112,6 +112,82 @@ jobs:
       continue-on-error: true
 
     # ====== STAGE 3: ScanCode Deep Scan ======
+    - name: Create ScanCode scan script
+      run: |
+        cat > scan_packages.py << 'EOF'
+        import json
+        import subprocess
+        import os
+        from pathlib import Path
+
+        # Load uncertain packages JSON for source URLs
+        with open('uncertain-packages/uncertain-packages.json', 'r') as f:
+            uncertain = json.load(f)
+
+        # Load scan list
+        with open('uncertain-packages/scan-list.txt', 'r') as f:
+            scan_ids = [line.strip() for line in f]
+
+        downloads_dir = Path('downloaded-packages')
+        downloads_dir.mkdir(exist_ok=True)
+
+        scanned = 0
+        for pkg in uncertain:
+            if pkg['id'] not in scan_ids:
+                continue
+
+            pkg_name = pkg['name'].replace('/', '-').replace(':', '-')
+            version = pkg['version']
+            source_url = pkg.get('source_artifact_url', '')
+
+            if not source_url:
+                print(f"Warning: No source URL for {pkg_name}, skipping...")
+                continue
+
+            # Download package
+            download_path = downloads_dir / f"{pkg_name}-{version}"
+            print(f"Downloading {pkg_name}...")
+
+            try:
+                # Download and extract
+                subprocess.run(['wget', '-q', '-O', f'{download_path}.tar.gz', source_url],
+                              check=True, timeout=60)
+                subprocess.run(['tar', '-xzf', f'{download_path}.tar.gz', '-C', str(downloads_dir)],
+                              check=False, timeout=30)
+
+                # Run ScanCode
+                print(f"Scanning {pkg_name}...")
+                scancode_output = f"scancode-results/{pkg_name}-{version}.json"
+
+                result = subprocess.run([
+                    'scancode',
+                    '-l', '-c', '-i',
+                    '--json', scancode_output,
+                    '--timeout', '120',
+                    '--max-depth', '3',
+                    str(download_path)
+                ], capture_output=True, text=True, timeout=300)
+
+                if result.returncode == 0:
+                    print(f"Successfully scanned {pkg_name}")
+                    scanned += 1
+                else:
+                    print(f"Warning: ScanCode returned non-zero for {pkg_name}")
+
+            except subprocess.TimeoutExpired:
+                print(f"Timeout scanning {pkg_name}")
+            except Exception as e:
+                print(f"Error processing {pkg_name}: {e}")
+
+            # Limit total scans
+            if scanned >= 10:
+                print(f"Reached scan limit of 10 packages")
+                break
+
+        print(f"ScanCode completed for {scanned} packages")
+        EOF
+      continue-on-error: true
+
     - name: Download and scan uncertain packages
       run: |
         echo "🔍 Stage 3: Running ScanCode on uncertain packages..."
@@ -135,79 +211,8 @@ jobs:
           cp uncertain-packages/uncertain-package-ids.txt uncertain-packages/scan-list.txt
         fi
 
-        # Create download and scan script
-        python3 << 'PYTHON_SCRIPT'
-import json
-import subprocess
-import os
-from pathlib import Path
-
-# Load uncertain packages JSON for source URLs
-with open('uncertain-packages/uncertain-packages.json', 'r') as f:
-    uncertain = json.load(f)
-
-# Load scan list
-with open('uncertain-packages/scan-list.txt', 'r') as f:
-    scan_ids = [line.strip() for line in f]
-
-downloads_dir = Path('downloaded-packages')
-downloads_dir.mkdir(exist_ok=True)
-
-scanned = 0
-for pkg in uncertain:
-    if pkg['id'] not in scan_ids:
-        continue
-
-    pkg_name = pkg['name'].replace('/', '-').replace(':', '-')
-    version = pkg['version']
-    source_url = pkg.get('source_artifact_url', '')
-
-    if not source_url:
-        print(f"⚠️  No source URL for {pkg_name}, skipping...")
-        continue
-
-    # Download package
-    download_path = downloads_dir / f"{pkg_name}-{version}"
-    print(f"📥 Downloading {pkg_name}...")
-
-    try:
-        # Download and extract
-        subprocess.run(['wget', '-q', '-O', f'{download_path}.tar.gz', source_url],
-                      check=True, timeout=60)
-        subprocess.run(['tar', '-xzf', f'{download_path}.tar.gz', '-C', str(downloads_dir)],
-                      check=False, timeout=30)
-
-        # Run ScanCode
-        print(f"🔬 Scanning {pkg_name}...")
-        scancode_output = f"scancode-results/{pkg_name}-{version}.json"
-
-        result = subprocess.run([
-            'scancode',
-            '-l', '-c', '-i',  # licenses, copyrights, info
-            '--json', scancode_output,
-            '--timeout', '120',  # 2 minutes per file
-            '--max-depth', '3',  # Limit directory depth
-            str(download_path)
-        ], capture_output=True, text=True, timeout=300)
-
-        if result.returncode == 0:
-            print(f"✅ Scanned {pkg_name} successfully")
-            scanned += 1
-        else:
-            print(f"⚠️  ScanCode returned non-zero for {pkg_name}")
-
-    except subprocess.TimeoutExpired:
-        print(f"⏱️  Timeout scanning {pkg_name}")
-    except Exception as e:
-        print(f"❌ Error processing {pkg_name}: {e}")
-
-    # Limit total scans
-    if scanned >= 10:
-        print(f"Reached scan limit of 10 packages")
-        break
-
-print(f"\n✅ ScanCode completed for {scanned} packages")
-PYTHON_SCRIPT
+        # Run the scan script
+        python3 scan_packages.py
       timeout-minutes: 30
       continue-on-error: true
 
