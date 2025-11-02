@@ -309,17 +309,17 @@ jobs:
 
     # ====== STAGE 7: Deploy to GitHub Pages ======
     - name: Setup Pages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
       uses: actions/configure-pages@v4
 
     - name: Upload Pages Artifact
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
       uses: actions/upload-pages-artifact@v3
       with:
         path: 'public'
 
     - name: Deploy to GitHub Pages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
       id: deployment
       uses: actions/deploy-pages@v4
 
