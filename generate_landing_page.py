@@ -18,6 +18,8 @@ def generate_landing_page(public_dir='public'):
     spdx_enhanced = ''
     spdx_original = ''
     uncertain_report = ''
+    scancode_html = ''
+    scancode_yaml = ''
 
     # Find files
     for file in public_path.glob('*web-app*.html'):
@@ -42,6 +44,24 @@ def generate_landing_page(public_dir='public'):
     if (public_path / 'uncertain-packages-report.md').exists():
         uncertain_report = 'uncertain-packages-report.md'
 
+    if (public_path / 'scancode-summary.html').exists():
+        scancode_html = 'scancode-summary.html'
+
+    if (public_path / 'scancode-summary.yml').exists():
+        scancode_yaml = 'scancode-summary.yml'
+
+    # Find individual ScanCode package reports
+    scancode_reports_dir = public_path / 'scancode-reports'
+    scancode_package_reports = []
+    if scancode_reports_dir.exists():
+        for html_file in sorted(scancode_reports_dir.glob('*.html')):
+            scancode_package_reports.append({
+                'name': html_file.stem,
+                'html': f'scancode-reports/{html_file.name}',
+                'json': f'scancode-reports/{html_file.stem}.json',
+                'yaml': f'scancode-reports/{html_file.stem}.yml'
+            })
+
     print(f"✅ Detected files:")
     print(f"  WebApp: {webapp_file or 'N/A'}")
     print(f"  AI Main Report: {ai_main_report or 'N/A'}")
@@ -50,6 +70,9 @@ def generate_landing_page(public_dir='public'):
     print(f"  SPDX Enhanced: {spdx_enhanced or 'N/A'}")
     print(f"  SPDX Original: {spdx_original or 'N/A'}")
     print(f"  Uncertain Report: {uncertain_report or 'N/A'}")
+    print(f"  ScanCode HTML: {scancode_html or 'N/A'}")
+    print(f"  ScanCode YAML: {scancode_yaml or 'N/A'}")
+    print(f"  ScanCode Package Reports: {len(scancode_package_reports)} packages")
 
     # Generate HTML
     html = '''<!DOCTYPE html>
@@ -171,6 +194,16 @@ def generate_landing_page(public_dir='public'):
       </a>
 '''
 
+    # Add ScanCode HTML report
+    if scancode_html:
+        html += f'''
+      <a href="{scancode_html}" class="report-card highlight">
+        <div class="report-icon">🔬</div>
+        <div class="report-title">ScanCode Analysis Report <span class="badge">DEEP SCAN</span></div>
+        <div class="report-desc">File-level license detection and copyright analysis</div>
+      </a>
+'''
+
     # Add ORT WebApp
     if webapp_file:
         html += f'''
@@ -178,6 +211,16 @@ def generate_landing_page(public_dir='public'):
         <div class="report-icon">🔍</div>
         <div class="report-title">ORT WebApp Report</div>
         <div class="report-desc">Interactive dependency tree and license visualization</div>
+      </a>
+'''
+
+    # Add ScanCode YAML report
+    if scancode_yaml:
+        html += f'''
+      <a href="{scancode_yaml}" class="report-card">
+        <div class="report-icon">📄</div>
+        <div class="report-title">ScanCode YAML Summary</div>
+        <div class="report-desc">Machine-readable ScanCode analysis results</div>
       </a>
 '''
 
@@ -221,9 +264,34 @@ def generate_landing_page(public_dir='public'):
       </a>
 '''
 
-    # Close HTML
+    # Close main report grid
     html += '''
     </div>
+'''
+
+    # Add individual ScanCode package reports section
+    if scancode_package_reports:
+        html += '''
+    <h2 style="margin-top: 40px; margin-bottom: 20px; color: #2d3748;">📦 Individual Package ScanCode Reports</h2>
+    <div style="background: #f7fafc; border: 2px solid #e2e8f0; border-radius: 8px; padding: 20px;">
+'''
+        for report in scancode_package_reports:
+            html += f'''
+      <div style="padding: 12px 0; border-bottom: 1px solid #e2e8f0;">
+        <div style="font-weight: 600; color: #2d3748; margin-bottom: 8px;">{report['name']}</div>
+        <div style="display: flex; gap: 12px;">
+          <a href="{report['html']}" style="color: #667eea; text-decoration: none; font-size: 0.9rem;">📄 HTML Report</a>
+          <a href="{report['json']}" style="color: #667eea; text-decoration: none; font-size: 0.9rem;">📋 JSON</a>
+          <a href="{report['yaml']}" style="color: #667eea; text-decoration: none; font-size: 0.9rem;">📝 YAML</a>
+        </div>
+      </div>
+'''
+        html += '''
+    </div>
+'''
+
+    # Close HTML
+    html += '''
   </div>
 </body>
 </html>

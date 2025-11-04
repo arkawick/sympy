@@ -2,9 +2,9 @@ name: Enhanced ORT Analysis with Multi-Tool Curation
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ master, main, develop ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ master, main, develop ]
   workflow_dispatch:
 
 permissions:
@@ -64,6 +64,7 @@ jobs:
       run: |
         echo "🔍 Stage 1: Running ORT Analyzer..."
         ort analyze -i . -o ort-results/analyzer
+      continue-on-error: true
 
     - name: Run ORT Advisor
       run: |
@@ -112,6 +113,84 @@ jobs:
       continue-on-error: true
 
     # ====== STAGE 3: ScanCode Deep Scan ======
+    - name: Create ScanCode scan script
+      run: |
+        cat > scan_packages.py << 'EOF'
+        import json
+        import subprocess
+        import os
+        from pathlib import Path
+
+        # Load uncertain packages JSON for source URLs
+        with open('uncertain-packages/uncertain-packages.json', 'r') as f:
+            uncertain = json.load(f)
+
+        # Load scan list
+        with open('uncertain-packages/scan-list.txt', 'r') as f:
+            scan_ids = [line.strip() for line in f]
+
+        downloads_dir = Path('downloaded-packages')
+        downloads_dir.mkdir(exist_ok=True)
+
+        scanned = 0
+        for pkg in uncertain:
+            if pkg['id'] not in scan_ids:
+                continue
+
+            pkg_name = pkg['name'].replace('/', '-').replace(':', '-')
+            version = pkg['version']
+            source_url = pkg.get('source_artifact_url', '')
+
+            if not source_url:
+                print(f"Warning: No source URL for {pkg_name}, skipping...")
+                continue
+
+            # Download package
+            download_path = downloads_dir / f"{pkg_name}-{version}"
+            print(f"Downloading {pkg_name}...")
+
+            try:
+                # Download and extract
+                subprocess.run(['wget', '-q', '-O', f'{download_path}.tar.gz', source_url],
+                              check=True, timeout=60)
+                subprocess.run(['tar', '-xzf', f'{download_path}.tar.gz', '-C', str(downloads_dir)],
+                              check=False, timeout=30)
+
+                # Run ScanCode with multiple output formats
+                print(f"Scanning {pkg_name}...")
+                base_output = f"scancode-results/{pkg_name}-{version}"
+
+                result = subprocess.run([
+                    'scancode',
+                    '-clpieu',  # copyright, license, package, info, email, url
+                    '--json', f"{base_output}.json",
+                    '--html', f"{base_output}.html",
+                    '--yaml', f"{base_output}.yml",
+                    '--timeout', '120',
+                    '--max-depth', '3',
+                    str(download_path)
+                ], capture_output=True, text=True, timeout=300)
+
+                if result.returncode == 0:
+                    print(f"Successfully scanned {pkg_name}")
+                    scanned += 1
+                else:
+                    print(f"Warning: ScanCode returned non-zero for {pkg_name}")
+
+            except subprocess.TimeoutExpired:
+                print(f"Timeout scanning {pkg_name}")
+            except Exception as e:
+                print(f"Error processing {pkg_name}: {e}")
+
+            # Limit total scans
+            if scanned >= 10:
+                print(f"Reached scan limit of 10 packages")
+                break
+
+        print(f"ScanCode completed for {scanned} packages")
+        EOF
+      continue-on-error: true
+
     - name: Download and scan uncertain packages
       run: |
         echo "🔍 Stage 3: Running ScanCode on uncertain packages..."
@@ -135,86 +214,28 @@ jobs:
           cp uncertain-packages/uncertain-package-ids.txt uncertain-packages/scan-list.txt
         fi
 
-        # Create download and scan script
-        python3 << 'PYTHON_SCRIPT'
-import json
-import subprocess
-import os
-from pathlib import Path
-
-# Load uncertain packages JSON for source URLs
-with open('uncertain-packages/uncertain-packages.json', 'r') as f:
-    uncertain = json.load(f)
-
-# Load scan list
-with open('uncertain-packages/scan-list.txt', 'r') as f:
-    scan_ids = [line.strip() for line in f]
-
-downloads_dir = Path('downloaded-packages')
-downloads_dir.mkdir(exist_ok=True)
-
-scanned = 0
-for pkg in uncertain:
-    if pkg['id'] not in scan_ids:
-        continue
-
-    pkg_name = pkg['name'].replace('/', '-').replace(':', '-')
-    version = pkg['version']
-    source_url = pkg.get('source_artifact_url', '')
-
-    if not source_url:
-        print(f"⚠️  No source URL for {pkg_name}, skipping...")
-        continue
-
-    # Download package
-    download_path = downloads_dir / f"{pkg_name}-{version}"
-    print(f"📥 Downloading {pkg_name}...")
-
-    try:
-        # Download and extract
-        subprocess.run(['wget', '-q', '-O', f'{download_path}.tar.gz', source_url],
-                      check=True, timeout=60)
-        subprocess.run(['tar', '-xzf', f'{download_path}.tar.gz', '-C', str(downloads_dir)],
-                      check=False, timeout=30)
-
-        # Run ScanCode
-        print(f"🔬 Scanning {pkg_name}...")
-        scancode_output = f"scancode-results/{pkg_name}-{version}.json"
-
-        result = subprocess.run([
-            'scancode',
-            '-l', '-c', '-i',  # licenses, copyrights, info
-            '--json', scancode_output,
-            '--timeout', '120',  # 2 minutes per file
-            '--max-depth', '3',  # Limit directory depth
-            str(download_path)
-        ], capture_output=True, text=True, timeout=300)
-
-        if result.returncode == 0:
-            print(f"✅ Scanned {pkg_name} successfully")
-            scanned += 1
-        else:
-            print(f"⚠️  ScanCode returned non-zero for {pkg_name}")
-
-    except subprocess.TimeoutExpired:
-        print(f"⏱️  Timeout scanning {pkg_name}")
-    except Exception as e:
-        print(f"❌ Error processing {pkg_name}: {e}")
-
-    # Limit total scans
-    if scanned >= 10:
-        print(f"Reached scan limit of 10 packages")
-        break
-
-print(f"\n✅ ScanCode completed for {scanned} packages")
-PYTHON_SCRIPT
+        # Run the scan script
+        python3 scan_packages.py
       timeout-minutes: 30
       continue-on-error: true
 
     # ====== STAGE 4: Merge ScanCode Results ======
+    - name: Generate ScanCode summary reports
+      run: |
+        echo "📊 Stage 4a: Generating ScanCode HTML and YAML summary reports..."
+
+        # Check if ScanCode results exist
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          python3 generate_scancode_reports.py scancode-results
+          echo "✅ ScanCode summary reports generated"
+        else
+          echo "⚠️  No ScanCode results found, skipping report generation"
+        fi
+      continue-on-error: true
+
     - name: Merge ScanCode results into SPDX
       run: |
-        echo "🔄 Stage 4: Merging ScanCode results into SPDX..."
+        echo "🔄 Stage 4b: Merging ScanCode results into SPDX..."
 
         python merge_scancode_to_spdx.py \
           --spdx ort-results/reporter/bom.spdx.yml \
@@ -235,25 +256,115 @@ PYTHON_SCRIPT
         fi
       continue-on-error: true
 
-    # ====== STAGE 5: Enhanced AI Curation ======
-    - name: Run enhanced AI curation
+    # ====== STAGE 5: AI-Powered Curation Reports ======
+    - name: Check AI curation prerequisites
+      run: |
+        echo "🔍 Checking prerequisites for AI curation..."
+
+        echo "Checking required files:"
+        [ -f ort-results/analyzer/analyzer-result.yml ] && echo "  ✓ ORT analyzer results found" || echo "  ✗ ORT analyzer results missing"
+        [ -f uncertain-packages/uncertain-packages.json ] && echo "  ✓ Uncertain packages found" || echo "  ✗ Uncertain packages missing"
+        [ -f ort-results/reporter/bom.spdx.yml ] && echo "  ✓ SPDX document found" || echo "  ✗ SPDX document missing"
+
+        echo "Checking Azure OpenAI configuration:"
+        [ -n "$AZURE_OPENAI_API_KEY" ] && echo "  ✓ API key configured" || echo "  ✗ API key missing"
+        [ -n "$AZURE_OPENAI_ENDPOINT" ] && echo "  ✓ Endpoint configured" || echo "  ✗ Endpoint missing"
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      continue-on-error: true
+
+    - name: Generate main ORT curation report
       env:
         AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
         AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
       run: |
-        echo "🤖 Stage 5: Running enhanced AI curation..."
+        echo "🤖 Stage 5a: Generating main ORT curation report..."
 
-        # Use enhanced SPDX if available, otherwise use original
+        # Check if ORT results exist
+        if [ ! -f ort-results/analyzer/analyzer-result.yml ]; then
+          echo "❌ ORT analyzer results not found!"
+          exit 0
+        fi
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+          echo "⚠️  AZURE_OPENAI_API_KEY not set, skipping AI report..."
+          exit 0
+        fi
+
+        # Run the original ORT curation script
+        echo "Running ort_curation_script_html.py..."
+        python3 ort_curation_script_html.py 2>&1 | tee ort-curation.log
+
+        # Check if report was generated
+        LATEST_REPORT=$(ls -t curation-report-*.html 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_REPORT" ] && [ -f "$LATEST_REPORT" ]; then
+          echo "✅ Main curation report generated: $LATEST_REPORT"
+          echo "   Size: $(wc -c < "$LATEST_REPORT") bytes"
+
+          # Create a consistent name for deployment
+          cp "$LATEST_REPORT" curation-report-main.html
+          echo "✅ Copied to curation-report-main.html for deployment"
+        else
+          echo "⚠️  No curation report generated, check ort-curation.log"
+          cat ort-curation.log || true
+        fi
+      continue-on-error: true
+
+    - name: Generate enhanced conflict analysis report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5b: Generating enhanced conflict analysis..."
+
+        # Only run if there are uncertain packages
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "✓ No uncertain packages found - skipping conflict analysis"
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to analyze"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT uncertain packages requiring analysis"
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ] || [ -z "$AZURE_OPENAI_ENDPOINT" ]; then
+          echo "⚠️  Azure OpenAI not configured, skipping conflict analysis..."
+          exit 0
+        fi
+
+        # Use enhanced SPDX if available
         SPDX_INPUT="ort-results/reporter/bom.spdx.yml"
         if [ -f enhanced-spdx/bom-enhanced-fixed.spdx.json ]; then
           SPDX_INPUT="enhanced-spdx/bom-enhanced-fixed.spdx.json"
+          echo "Using enhanced SPDX: $SPDX_INPUT"
+        else
+          echo "Using original SPDX: $SPDX_INPUT"
         fi
 
-        python enhanced_ai_curation.py \
+        # Run enhanced conflict analysis
+        echo "Running enhanced_ai_curation.py..."
+        python3 enhanced_ai_curation.py \
           --ort-results ort-results/analyzer/analyzer-result.yml \
           --spdx-doc "$SPDX_INPUT" \
           --uncertain-packages uncertain-packages/uncertain-packages.json \
-          --output curation-report-enhanced.html
+          --output curation-report-conflicts.html 2>&1 | tee conflict-analysis.log
+
+        # Verify output
+        if [ -f curation-report-conflicts.html ] && [ -s curation-report-conflicts.html ]; then
+          echo "✅ Conflict analysis report generated ($(wc -c < curation-report-conflicts.html) bytes)"
+        else
+          echo "⚠️  Conflict analysis failed, check conflict-analysis.log"
+          cat conflict-analysis.log || true
+        fi
       continue-on-error: true
 
     # ====== STAGE 6: Prepare GitHub Pages ======
@@ -272,14 +383,50 @@ PYTHON_SCRIPT
           cp enhanced-spdx/bom-enhanced-fixed.spdx.json public/bom-enhanced.spdx.json
         fi
 
-        # Copy AI curation report
-        if [ -f curation-report-enhanced.html ]; then
-          cp curation-report-enhanced.html public/
+        # Copy AI curation reports
+        if [ -f curation-report-main.html ]; then
+          cp curation-report-main.html public/
+          echo "  ✓ Main ORT curation report"
+        fi
+
+        if [ -f curation-report-conflicts.html ]; then
+          cp curation-report-conflicts.html public/
+          echo "  ✓ Conflict analysis report"
+        fi
+
+        # Copy any timestamped reports too
+        if ls curation-report-*.html 1> /dev/null 2>&1; then
+          for report in curation-report-*.html; do
+            [ -f "$report" ] && cp "$report" public/ 2>/dev/null || true
+          done
+        fi
+
+        # Copy native ScanCode reports (HTML, JSON, YAML)
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          mkdir -p public/scancode-reports
+          cp scancode-results/*.html public/scancode-reports/ 2>/dev/null || true
+          cp scancode-results/*.json public/scancode-reports/ 2>/dev/null || true
+          cp scancode-results/*.yml public/scancode-reports/ 2>/dev/null || true
+
+          SCANCODE_COUNT=$(ls -1 scancode-results/*.html 2>/dev/null | wc -l)
+          echo "  ✓ Copied $SCANCODE_COUNT ScanCode native reports"
+        fi
+
+        # Copy ScanCode summary reports
+        if [ -f scancode-summary.html ]; then
+          cp scancode-summary.html public/
+          echo "  ✓ ScanCode HTML summary"
+        fi
+
+        if [ -f scancode-summary.yml ]; then
+          cp scancode-summary.yml public/
+          echo "  ✓ ScanCode YAML summary"
         fi
 
         # Copy ScanCode merge report
         if [ -f enhanced-spdx/merge-report.md ]; then
           cp enhanced-spdx/merge-report.md public/
+          echo "  ✓ ScanCode merge report"
         fi
 
         # Copy uncertain packages report
@@ -296,191 +443,24 @@ PYTHON_SCRIPT
         echo "📂 Detecting generated files..."
         ls -la public/
 
-        WEBAPP_FILE=$(find public/ -maxdepth 1 -name "*web-app*.html" -type f | head -n 1 | xargs basename 2>/dev/null || echo "")
-        AI_REPORT=$(ls public/curation-report-enhanced.html 2>/dev/null | xargs basename || echo "")
-        CYCLONEDX=$(ls public/bom.cyclonedx.json 2>/dev/null || echo "")
-        SPDX_ENHANCED=$(ls public/bom-enhanced.spdx.json 2>/dev/null || echo "")
-        SPDX_ORIGINAL=$(ls public/bom.spdx.yml 2>/dev/null || echo "")
-        UNCERTAIN_REPORT=$(ls public/uncertain-packages-report.md 2>/dev/null || echo "")
-
-        # Generate landing page
-        cat > public/index.html << 'HTMLEOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Enhanced ORT Analysis Reports</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, rgba(102,126,234,0.9), rgba(118,75,162,0.9)),
-                  url('background.jpg') no-repeat center center fixed;
-      background-size: cover;
-      min-height: 100vh;
-      padding: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .container {
-      background: white;
-      border-radius: 16px;
-      padding: 40px;
-      max-width: 1000px;
-      width: 100%;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-    }
-    h1 {
-      color: #2d3748;
-      margin-bottom: 10px;
-      font-size: 2.5rem;
-    }
-    .subtitle {
-      color: #718096;
-      margin-bottom: 30px;
-      font-size: 1.1rem;
-    }
-    .badge {
-      display: inline-block;
-      background: linear-gradient(135deg, #667eea, #764ba2);
-      color: white;
-      padding: 6px 16px;
-      border-radius: 20px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-left: 8px;
-    }
-    .report-grid {
-      display: grid;
-      gap: 16px;
-      margin-top: 30px;
-    }
-    .report-card {
-      background: #f7fafc;
-      border: 2px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 24px;
-      transition: all 0.3s;
-      text-decoration: none;
-      display: block;
-    }
-    .report-card:hover {
-      border-color: #667eea;
-      box-shadow: 0 4px 12px rgba(102,126,234,0.2);
-      transform: translateY(-2px);
-    }
-    .highlight {
-      background: linear-gradient(135deg, #667eea, #764ba2);
-      border: none;
-    }
-    .highlight .report-title,
-    .highlight .report-desc {
-      color: white;
-    }
-    .report-icon {
-      font-size: 2rem;
-      margin-bottom: 12px;
-    }
-    .report-title {
-      color: #2d3748;
-      font-size: 1.3rem;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-    .report-desc {
-      color: #718096;
-      font-size: 0.95rem;
-      line-height: 1.5;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>🔍 Enhanced ORT Analysis Reports</h1>
-    <p class="subtitle">Multi-Tool License Compliance Analysis <span class="badge">ENHANCED</span></p>
-
-    <div class="report-grid">
-HTMLEOF
-
-        # Add AI curation report
-        if [ -n "$AI_REPORT" ]; then
-          cat >> public/index.html << HTMLEOF
-      <a href="$AI_REPORT" class="report-card highlight">
-        <div class="report-icon">🤖</div>
-        <div class="report-title">Enhanced AI Curation Report <span class="badge">NEW</span></div>
-        <div class="report-desc">Multi-tool AI analysis with ORT + ScanCode + SPDX validation</div>
-      </a>
-HTMLEOF
-        fi
-
-        # Add ORT WebApp
-        if [ -n "$WEBAPP_FILE" ]; then
-          cat >> public/index.html << HTMLEOF
-      <a href="$WEBAPP_FILE" class="report-card">
-        <div class="report-icon">🔍</div>
-        <div class="report-title">ORT WebApp Report</div>
-        <div class="report-desc">Interactive dependency tree and license visualization</div>
-      </a>
-HTMLEOF
-        fi
-
-        # Add enhanced SPDX
-        if [ -n "$SPDX_ENHANCED" ]; then
-          cat >> public/index.html << HTMLEOF
-      <a href="$SPDX_ENHANCED" class="report-card">
-        <div class="report-icon">✨</div>
-        <div class="report-title">Enhanced SPDX Document</div>
-        <div class="report-desc">SPDX enhanced with ScanCode license detections</div>
-      </a>
-HTMLEOF
-        fi
-
-        # Add CycloneDX
-        if [ -n "$CYCLONEDX" ]; then
-          cat >> public/index.html << HTMLEOF
-      <a href="$CYCLONEDX" class="report-card">
-        <div class="report-icon">📦</div>
-        <div class="report-title">CycloneDX SBOM</div>
-        <div class="report-desc">Software Bill of Materials in CycloneDX format</div>
-      </a>
-HTMLEOF
-        fi
-
-        # Add uncertain packages report
-        if [ -n "$UNCERTAIN_REPORT" ]; then
-          cat >> public/index.html << HTMLEOF
-      <a href="$UNCERTAIN_REPORT" class="report-card">
-        <div class="report-icon">⚠️</div>
-        <div class="report-title">Uncertain Packages Report</div>
-        <div class="report-desc">Packages requiring manual license review</div>
-      </a>
-HTMLEOF
-        fi
-
-        cat >> public/index.html << 'HTMLEOF'
-    </div>
-  </div>
-</body>
-</html>
-HTMLEOF
+        # Generate landing page using Python script
+        python3 generate_landing_page.py public
 
         echo "✅ Landing page generated with all available reports"
 
     # ====== STAGE 7: Deploy to GitHub Pages ======
     - name: Setup Pages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
       uses: actions/configure-pages@v4
 
     - name: Upload Pages Artifact
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
       uses: actions/upload-pages-artifact@v3
       with:
         path: 'public'
 
     - name: Deploy to GitHub Pages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
       id: deployment
       uses: actions/deploy-pages@v4
 

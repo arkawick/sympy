@@ -156,14 +156,16 @@ jobs:
                 subprocess.run(['tar', '-xzf', f'{download_path}.tar.gz', '-C', str(downloads_dir)],
                               check=False, timeout=30)
 
-                # Run ScanCode
+                # Run ScanCode with multiple output formats
                 print(f"Scanning {pkg_name}...")
-                scancode_output = f"scancode-results/{pkg_name}-{version}.json"
+                base_output = f"scancode-results/{pkg_name}-{version}"
 
                 result = subprocess.run([
                     'scancode',
-                    '-l', '-c', '-i',
-                    '--json', scancode_output,
+                    '-clpieu',  # copyright, license, package, info, email, url
+                    '--json', f"{base_output}.json",
+                    '--html', f"{base_output}.html",
+                    '--yaml', f"{base_output}.yml",
                     '--timeout', '120',
                     '--max-depth', '3',
                     str(download_path)
@@ -218,9 +220,22 @@ jobs:
       continue-on-error: true
 
     # ====== STAGE 4: Merge ScanCode Results ======
+    - name: Generate ScanCode summary reports
+      run: |
+        echo "📊 Stage 4a: Generating ScanCode HTML and YAML summary reports..."
+
+        # Check if ScanCode results exist
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          python3 generate_scancode_reports.py scancode-results
+          echo "✅ ScanCode summary reports generated"
+        else
+          echo "⚠️  No ScanCode results found, skipping report generation"
+        fi
+      continue-on-error: true
+
     - name: Merge ScanCode results into SPDX
       run: |
-        echo "🔄 Stage 4: Merging ScanCode results into SPDX..."
+        echo "🔄 Stage 4b: Merging ScanCode results into SPDX..."
 
         python merge_scancode_to_spdx.py \
           --spdx ort-results/reporter/bom.spdx.yml \
@@ -384,6 +399,28 @@ jobs:
           for report in curation-report-*.html; do
             [ -f "$report" ] && cp "$report" public/ 2>/dev/null || true
           done
+        fi
+
+        # Copy native ScanCode reports (HTML, JSON, YAML)
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          mkdir -p public/scancode-reports
+          cp scancode-results/*.html public/scancode-reports/ 2>/dev/null || true
+          cp scancode-results/*.json public/scancode-reports/ 2>/dev/null || true
+          cp scancode-results/*.yml public/scancode-reports/ 2>/dev/null || true
+
+          SCANCODE_COUNT=$(ls -1 scancode-results/*.html 2>/dev/null | wc -l)
+          echo "  ✓ Copied $SCANCODE_COUNT ScanCode native reports"
+        fi
+
+        # Copy ScanCode summary reports
+        if [ -f scancode-summary.html ]; then
+          cp scancode-summary.html public/
+          echo "  ✓ ScanCode HTML summary"
+        fi
+
+        if [ -f scancode-summary.yml ]; then
+          cp scancode-summary.yml public/
+          echo "  ✓ ScanCode YAML summary"
         fi
 
         # Copy ScanCode merge report
