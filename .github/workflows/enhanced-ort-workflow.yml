@@ -183,8 +183,8 @@ jobs:
                 print(f"Error processing {pkg_name}: {e}")
 
             # Limit total scans
-            if scanned >= 10:
-                print(f"Reached scan limit of 10 packages")
+            if scanned >= 20:
+                print(f"Reached scan limit of 20 packages")
                 break
 
         print(f"ScanCode completed for {scanned} packages")
@@ -205,8 +205,8 @@ jobs:
         UNCERTAIN_COUNT=$(wc -l < uncertain-packages/uncertain-package-ids.txt)
         echo "Found $UNCERTAIN_COUNT packages requiring deep scanning"
 
-        # Limit to first 10 packages to avoid timeout
-        SCAN_LIMIT=10
+        # Limit to first 20 packages to avoid timeout
+        SCAN_LIMIT=20
         if [ $UNCERTAIN_COUNT -gt $SCAN_LIMIT ]; then
           echo "⚠️  Limiting ScanCode to first $SCAN_LIMIT packages (of $UNCERTAIN_COUNT)"
           head -n $SCAN_LIMIT uncertain-packages/uncertain-package-ids.txt > uncertain-packages/scan-list.txt
@@ -367,6 +367,50 @@ jobs:
         fi
       continue-on-error: true
 
+    - name: Generate AI missing licenses report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5c: Generating AI missing licenses analysis..."
+
+        # Only run if there are uncertain packages
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "✓ No uncertain packages found - skipping missing licenses analysis"
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to analyze"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT uncertain packages - analyzing for missing licenses"
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+          echo "⚠️  Azure OpenAI not configured, skipping missing licenses analysis..."
+          exit 0
+        fi
+
+        # Run AI missing licenses analyzer
+        echo "Running ai_missing_licenses_analyzer.py..."
+        python3 ai_missing_licenses_analyzer.py \
+          uncertain-packages/uncertain-packages.json \
+          curation-report-missing-licenses.html 2>&1 | tee missing-licenses-analysis.log
+
+        # Verify output
+        if [ -f curation-report-missing-licenses.html ] && [ -s curation-report-missing-licenses.html ]; then
+          echo "✅ Missing licenses analysis report generated ($(wc -c < curation-report-missing-licenses.html) bytes)"
+        else
+          echo "⚠️  Missing licenses analysis failed, check missing-licenses-analysis.log"
+          cat missing-licenses-analysis.log || true
+        fi
+      continue-on-error: true
+
     # ====== STAGE 6: Prepare GitHub Pages ======
     - name: Prepare Pages Deployment
       run: |
@@ -392,6 +436,11 @@ jobs:
         if [ -f curation-report-conflicts.html ]; then
           cp curation-report-conflicts.html public/
           echo "  ✓ Conflict analysis report"
+        fi
+
+        if [ -f curation-report-missing-licenses.html ]; then
+          cp curation-report-missing-licenses.html public/
+          echo "  ✓ Missing licenses AI analysis report"
         fi
 
         # Copy any timestamped reports too

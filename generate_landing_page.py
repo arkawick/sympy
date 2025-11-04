@@ -12,8 +12,10 @@ def generate_landing_page(public_dir='public'):
 
     # Detect available files
     webapp_file = ''
+    static_html = ''
     ai_main_report = ''
     ai_conflict_report = ''
+    ai_missing_licenses = ''
     cyclonedx = ''
     spdx_enhanced = ''
     spdx_original = ''
@@ -26,8 +28,15 @@ def generate_landing_page(public_dir='public'):
         webapp_file = file.name
         break
 
+    # Find static HTML report (scan-report.html)
+    if (public_path / 'scan-report.html').exists():
+        static_html = 'scan-report.html'
+
     if (public_path / 'curation-report-main.html').exists():
         ai_main_report = 'curation-report-main.html'
+
+    if (public_path / 'curation-report-missing-licenses.html').exists():
+        ai_missing_licenses = 'curation-report-missing-licenses.html'
 
     if (public_path / 'curation-report-conflicts.html').exists():
         ai_conflict_report = 'curation-report-conflicts.html'
@@ -64,8 +73,10 @@ def generate_landing_page(public_dir='public'):
 
     print(f"✅ Detected files:")
     print(f"  WebApp: {webapp_file or 'N/A'}")
+    print(f"  Static HTML: {static_html or 'N/A'}")
     print(f"  AI Main Report: {ai_main_report or 'N/A'}")
     print(f"  AI Conflict Report: {ai_conflict_report or 'N/A'}")
+    print(f"  AI Missing Licenses: {ai_missing_licenses or 'N/A'}")
     print(f"  CycloneDX: {cyclonedx or 'N/A'}")
     print(f"  SPDX Enhanced: {spdx_enhanced or 'N/A'}")
     print(f"  SPDX Original: {spdx_original or 'N/A'}")
@@ -194,6 +205,16 @@ def generate_landing_page(public_dir='public'):
       </a>
 '''
 
+    # Add AI missing licenses report
+    if ai_missing_licenses:
+        html += f'''
+      <a href="{ai_missing_licenses}" class="report-card highlight">
+        <div class="report-icon">🔍</div>
+        <div class="report-title">Missing Licenses Analysis <span class="badge">AI RESEARCH</span></div>
+        <div class="report-desc">AI-powered license suggestions for packages with missing or blank licenses</div>
+      </a>
+'''
+
     # Add ScanCode HTML report
     if scancode_html:
         html += f'''
@@ -208,9 +229,19 @@ def generate_landing_page(public_dir='public'):
     if webapp_file:
         html += f'''
       <a href="{webapp_file}" class="report-card">
-        <div class="report-icon">🔍</div>
+        <div class="report-icon">🌐</div>
         <div class="report-title">ORT WebApp Report</div>
         <div class="report-desc">Interactive dependency tree and license visualization</div>
+      </a>
+'''
+
+    # Add ORT Static HTML
+    if static_html:
+        html += f'''
+      <a href="{static_html}" class="report-card">
+        <div class="report-icon">📊</div>
+        <div class="report-title">ORT Static HTML Report</div>
+        <div class="report-desc">Traditional static compliance report with all license details</div>
       </a>
 '''
 
