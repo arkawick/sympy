@@ -22,6 +22,7 @@ def generate_landing_page(public_dir='public'):
     uncertain_report = ''
     scancode_html = ''
     scancode_yaml = ''
+    pypi_html_report = ''
 
     # Find files
     for file in public_path.glob('*web-app*.html'):
@@ -59,6 +60,9 @@ def generate_landing_page(public_dir='public'):
     if (public_path / 'scancode-summary.yml').exists():
         scancode_yaml = 'scancode-summary.yml'
 
+    if (public_path / 'pypi-licenses-report.html').exists():
+        pypi_html_report = 'pypi-licenses-report.html'
+
     # Find individual ScanCode package reports
     scancode_reports_dir = public_path / 'scancode-reports'
     scancode_package_reports = []
@@ -83,6 +87,7 @@ def generate_landing_page(public_dir='public'):
     print(f"  Uncertain Report: {uncertain_report or 'N/A'}")
     print(f"  ScanCode HTML: {scancode_html or 'N/A'}")
     print(f"  ScanCode YAML: {scancode_yaml or 'N/A'}")
+    print(f"  PyPI HTML Report: {pypi_html_report or 'N/A'}")
     print(f"  ScanCode Package Reports: {len(scancode_package_reports)} packages")
 
     # Generate HTML
@@ -212,6 +217,16 @@ def generate_landing_page(public_dir='public'):
         <div class="report-icon">🔍</div>
         <div class="report-title">Missing Licenses Analysis <span class="badge">AI RESEARCH</span></div>
         <div class="report-desc">AI-powered license suggestions for packages with missing or blank licenses</div>
+      </a>
+'''
+
+    # Add PyPI HTML report
+    if pypi_html_report:
+        html += f'''
+      <a href="{pypi_html_report}" class="report-card highlight">
+        <div class="report-icon">🌐</div>
+        <div class="report-title">PyPI License Fetch Report <span class="badge">FAST API</span></div>
+        <div class="report-desc">Licenses retrieved from PyPI API - reduces ScanCode workload significantly</div>
       </a>
 '''
 

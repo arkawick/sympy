@@ -140,6 +140,7 @@ jobs:
           --json \
           --csv \
           --curations \
+          --html \
           --output-dir pypi-licenses
 
         echo "✅ PyPI license fetch complete"
@@ -550,6 +551,13 @@ jobs:
 
         # Copy PyPI license fetch results
         if [ -d pypi-licenses ] && [ "$(ls -A pypi-licenses)" ]; then
+          # Copy HTML report to public root for easy access
+          if [ -f pypi-licenses/pypi-licenses-report.html ]; then
+            cp pypi-licenses/pypi-licenses-report.html public/
+            echo "  ✓ PyPI HTML report"
+          fi
+
+          # Copy all other files to subdirectory
           mkdir -p public/pypi-licenses
           cp pypi-licenses/*.json public/pypi-licenses/ 2>/dev/null || true
           cp pypi-licenses/*.csv public/pypi-licenses/ 2>/dev/null || true

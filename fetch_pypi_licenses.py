@@ -370,6 +370,478 @@ class ORTLicenseAnalyzer:
 
         print(f"💾 Statistics exported to: {output_file}")
 
+    def export_to_html(self, output_file: Optional[str] = None):
+        """Export beautiful HTML report of PyPI license fetch results."""
+        if output_file is None:
+            output_file = self.output_dir / "pypi-licenses-report.html"
+        else:
+            output_file = Path(output_file)
+
+        # Calculate statistics
+        reduction_percentage = 0
+        if self.fetch_stats['total_missing'] > 0:
+            reduction_percentage = (self.fetch_stats['licenses_found'] / self.fetch_stats['total_missing']) * 100
+
+        success_rate = 0
+        if self.fetch_stats['pypi_packages'] > 0:
+            success_rate = (self.fetch_stats['licenses_found'] / self.fetch_stats['pypi_packages']) * 100
+
+        # Separate packages by status
+        found_packages = []
+        still_missing = []
+        non_pypi = []
+
+        for pkg in self.missing_licenses:
+            ecosystem, name, version = self.parse_package_id(pkg['id'])
+
+            if ecosystem != 'PyPI':
+                non_pypi.append(pkg)
+            elif pkg.get('fetched_license', {}).get('license'):
+                found_packages.append(pkg)
+            else:
+                still_missing.append(pkg)
+
+        # Generate HTML
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyPI License Fetch Report</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }}
+
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }}
+
+        header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }}
+
+        h1 {{
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }}
+
+        .subtitle {{
+            font-size: 1.1em;
+            opacity: 0.9;
+        }}
+
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 40px;
+            background: #f8f9fa;
+        }}
+
+        .stat-card {{
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-left: 4px solid #667eea;
+        }}
+
+        .stat-card.success {{
+            border-left-color: #10b981;
+        }}
+
+        .stat-card.warning {{
+            border-left-color: #f59e0b;
+        }}
+
+        .stat-card.info {{
+            border-left-color: #3b82f6;
+        }}
+
+        .stat-number {{
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #1f2937;
+            margin: 10px 0;
+        }}
+
+        .stat-label {{
+            color: #6b7280;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+
+        .content {{
+            padding: 40px;
+        }}
+
+        h2 {{
+            color: #1f2937;
+            margin: 30px 0 20px;
+            font-size: 1.8em;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+
+        thead {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }}
+
+        th {{
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }}
+
+        td {{
+            padding: 12px 15px;
+            border-bottom: 1px solid #e5e7eb;
+        }}
+
+        tbody tr:hover {{
+            background: #f9fafb;
+        }}
+
+        .badge {{
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }}
+
+        .badge.success {{
+            background: #d1fae5;
+            color: #065f46;
+        }}
+
+        .badge.warning {{
+            background: #fef3c7;
+            color: #92400e;
+        }}
+
+        .badge.error {{
+            background: #fee2e2;
+            color: #991b1b;
+        }}
+
+        .badge.info {{
+            background: #dbeafe;
+            color: #1e40af;
+        }}
+
+        .license-tag {{
+            font-family: 'Courier New', monospace;
+            background: #f3f4f6;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }}
+
+        .link {{
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }}
+
+        .link:hover {{
+            text-decoration: underline;
+        }}
+
+        .empty-state {{
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b7280;
+        }}
+
+        .empty-state svg {{
+            width: 80px;
+            height: 80px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }}
+
+        footer {{
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }}
+
+        .progress-bar {{
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }}
+
+        .progress-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+            transition: width 0.3s ease;
+        }}
+
+        .classifiers {{
+            font-size: 0.85em;
+            color: #6b7280;
+            margin-top: 5px;
+        }}
+
+        .package-name {{
+            font-weight: 600;
+            color: #1f2937;
+        }}
+
+        .version {{
+            color: #6b7280;
+            font-size: 0.9em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌐 PyPI License Fetch Report</h1>
+            <p class="subtitle">Fast License Retrieval from Python Package Index</p>
+            <p class="subtitle">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </header>
+
+        <div class="stats-grid">
+            <div class="stat-card info">
+                <div class="stat-label">Total Packages Analyzed</div>
+                <div class="stat-number">{self.fetch_stats['total_missing']}</div>
+            </div>
+
+            <div class="stat-card success">
+                <div class="stat-label">Licenses Found in PyPI</div>
+                <div class="stat-number">{self.fetch_stats['licenses_found']}</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {success_rate}%"></div>
+                </div>
+                <div style="font-size: 0.9em; margin-top: 5px;">Success Rate: {success_rate:.1f}%</div>
+            </div>
+
+            <div class="stat-card warning">
+                <div class="stat-label">Still Missing</div>
+                <div class="stat-number">{self.fetch_stats['licenses_still_missing']}</div>
+                <div style="font-size: 0.9em; margin-top: 5px;">Require ScanCode analysis</div>
+            </div>
+
+            <div class="stat-card success">
+                <div class="stat-label">Workload Reduction</div>
+                <div class="stat-number">{reduction_percentage:.1f}%</div>
+                <div style="font-size: 0.9em; margin-top: 5px;">Fewer packages to scan</div>
+            </div>
+        </div>
+
+        <div class="content">
+"""
+
+        # Licenses Found Section
+        if found_packages:
+            html += f"""
+            <h2>✅ Licenses Found in PyPI ({len(found_packages)} packages)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Package</th>
+                        <th>Version</th>
+                        <th>License Found</th>
+                        <th>Source</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+            for pkg in found_packages:
+                ecosystem, name, version = self.parse_package_id(pkg['id'])
+                fetched = pkg.get('fetched_license', {})
+                license_info = fetched.get('license', 'N/A')
+                license_expr = fetched.get('license_expression', '')
+                classifiers = fetched.get('classifiers', [])
+
+                # Determine source
+                source = "license_expression" if license_expr else "license field"
+                if classifiers and not license_expr:
+                    source = "classifiers"
+
+                pypi_url = f"https://pypi.org/project/{name}/{version}/"
+
+                html += f"""
+                    <tr>
+                        <td><span class="package-name">{name}</span></td>
+                        <td><span class="version">{version}</span></td>
+                        <td>
+                            <span class="license-tag">{license_info}</span>
+                            {'<div class="classifiers">' + '<br>'.join(classifiers[:2]) + '</div>' if classifiers else ''}
+                        </td>
+                        <td><span class="badge info">{source}</span></td>
+                        <td><a href="{pypi_url}" target="_blank" class="link">View on PyPI</a></td>
+                    </tr>
+"""
+
+            html += """
+                </tbody>
+            </table>
+"""
+
+        # Still Missing Section
+        if still_missing:
+            html += f"""
+            <h2>⚠️ Packages Still Missing Licenses ({len(still_missing)} packages)</h2>
+            <p style="color: #6b7280; margin-bottom: 20px;">These PyPI packages need ScanCode analysis or manual verification.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Package</th>
+                        <th>Version</th>
+                        <th>Status</th>
+                        <th>Homepage</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+            for pkg in still_missing:
+                ecosystem, name, version = self.parse_package_id(pkg['id'])
+                fetched = pkg.get('fetched_license', {})
+                error = fetched.get('error', 'No license in PyPI metadata')
+                homepage = pkg.get('homepage_url', '')
+                pypi_url = f"https://pypi.org/project/{name}/{version}/"
+
+                html += f"""
+                    <tr>
+                        <td><span class="package-name">{name}</span></td>
+                        <td><span class="version">{version}</span></td>
+                        <td><span class="badge warning">Missing</span></td>
+                        <td>{f'<a href="{homepage}" target="_blank" class="link">Homepage</a>' if homepage else '-'}</td>
+                        <td><a href="{pypi_url}" target="_blank" class="link">View on PyPI</a></td>
+                    </tr>
+"""
+
+            html += """
+                </tbody>
+            </table>
+"""
+
+        # Non-PyPI Packages Section
+        if non_pypi:
+            html += f"""
+            <h2>ℹ️ Non-PyPI Packages ({len(non_pypi)} packages)</h2>
+            <p style="color: #6b7280; margin-bottom: 20px;">These packages are from other ecosystems and were not checked via PyPI API.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Package ID</th>
+                        <th>Ecosystem</th>
+                        <th>Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+            for pkg in non_pypi[:20]:  # Limit to first 20 to avoid huge tables
+                ecosystem, name, version = self.parse_package_id(pkg['id'])
+
+                html += f"""
+                    <tr>
+                        <td><span class="package-name">{name}:{version}</span></td>
+                        <td><span class="badge info">{ecosystem}</span></td>
+                        <td>Requires ScanCode or ecosystem-specific check</td>
+                    </tr>
+"""
+
+            if len(non_pypi) > 20:
+                html += f"""
+                    <tr>
+                        <td colspan="3" style="text-align: center; color: #6b7280; font-style: italic;">
+                            ... and {len(non_pypi) - 20} more non-PyPI packages
+                        </td>
+                    </tr>
+"""
+
+            html += """
+                </tbody>
+            </table>
+"""
+
+        # Summary Section
+        html += f"""
+            <h2>📊 Summary & Next Steps</h2>
+            <div style="background: #f9fafb; padding: 30px; border-radius: 8px; border-left: 4px solid #667eea;">
+                <h3 style="margin-bottom: 15px; color: #1f2937;">Key Findings:</h3>
+                <ul style="line-height: 2; color: #374151;">
+                    <li><strong>{self.fetch_stats['licenses_found']}</strong> licenses successfully retrieved from PyPI</li>
+                    <li><strong>{reduction_percentage:.1f}%</strong> reduction in ScanCode workload</li>
+                    <li><strong>{self.fetch_stats['licenses_still_missing']}</strong> packages still require deeper analysis</li>
+                    <li><strong>{self.fetch_stats['non_pypi_packages']}</strong> non-PyPI packages (NPM, Maven, etc.)</li>
+                </ul>
+
+                <h3 style="margin: 25px 0 15px; color: #1f2937;">Recommended Actions:</h3>
+                <ol style="line-height: 2; color: #374151;">
+                    <li><strong>Review Found Licenses:</strong> Verify accuracy from PyPI metadata</li>
+                    <li><strong>Apply Curations:</strong> Use <code>curation-suggestions.yml</code> after manual verification</li>
+                    <li><strong>Run ScanCode:</strong> For {self.fetch_stats['licenses_still_missing']} remaining packages</li>
+                    <li><strong>Manual Verification:</strong> Check GitHub repositories for packages with missing licenses</li>
+                </ol>
+
+                <div style="margin-top: 20px; padding: 15px; background: #fef3c7; border-radius: 6px; border-left: 4px solid #f59e0b;">
+                    <strong>⚠️ Important:</strong> Always verify PyPI license information manually before applying curations.
+                    Package metadata may be incomplete or incorrect.
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p><strong>Enhanced ORT License Curation System</strong></p>
+            <p style="margin-top: 10px;">PyPI API License Fetcher - Fast, automated license retrieval for Python packages</p>
+            <p style="margin-top: 10px; font-size: 0.9em;">Generated from: {self.yaml_file}</p>
+        </footer>
+    </div>
+</body>
+</html>
+"""
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html)
+
+        print(f"💾 HTML report exported to: {output_file}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -397,6 +869,8 @@ Examples:
                        help='Export report to CSV file')
     parser.add_argument('--curations', action='store_true',
                        help='Generate curation suggestions YAML (requires manual review!)')
+    parser.add_argument('--html', action='store_true',
+                       help='Export beautiful HTML report')
     parser.add_argument('--output-dir', default='pypi-licenses',
                        help='Output directory for reports (default: pypi-licenses)')
 
@@ -434,6 +908,9 @@ Examples:
 
     if args.curations and analyzer.pypi_fetched:
         analyzer.export_curation_suggestions()
+
+    if args.html:
+        analyzer.export_to_html()
 
     print("\n✅ PyPI license fetch complete!")
     print(f"📁 All outputs saved to: {analyzer.output_dir}/")
