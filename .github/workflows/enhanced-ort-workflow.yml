@@ -56,8 +56,8 @@ jobs:
 
     - name: Clean previous results
       run: |
-        rm -rf ort-results scancode-results uncertain-packages enhanced-spdx
-        mkdir -p ort-results scancode-results uncertain-packages enhanced-spdx
+        rm -rf ort-results scancode-results uncertain-packages enhanced-spdx pypi-licenses
+        mkdir -p ort-results scancode-results uncertain-packages enhanced-spdx pypi-licenses
 
     # ====== STAGE 1: ORT Analysis ======
     - name: Run ORT Analyzer
@@ -112,7 +112,54 @@ jobs:
         fi
       continue-on-error: true
 
-    # ====== STAGE 3: ScanCode Deep Scan ======
+    # ====== STAGE 2.5: Fetch PyPI Licenses ======
+    - name: Fetch licenses from PyPI API
+      run: |
+        echo "🌐 Stage 2.5: Fetching missing licenses from PyPI API..."
+
+        # Check if there are uncertain packages to fetch
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "⚠️  No uncertain packages found, skipping PyPI fetch..."
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to fetch from PyPI"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT packages with missing licenses"
+
+        # Run PyPI license fetcher
+        python3 fetch_pypi_licenses.py \
+          ort-results/analyzer/analyzer-result.yml \
+          --fetch \
+          --json \
+          --csv \
+          --curations \
+          --output-dir pypi-licenses
+
+        echo "✅ PyPI license fetch complete"
+      continue-on-error: true
+
+    - name: Display PyPI fetch statistics
+      run: |
+        if [ -f pypi-licenses/pypi-fetch-stats.txt ]; then
+          echo "📊 PyPI License Fetch Statistics:"
+          cat pypi-licenses/pypi-fetch-stats.txt
+
+          # Add to GitHub summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🌐 PyPI License Fetch Results" >> $GITHUB_STEP_SUMMARY
+          cat pypi-licenses/pypi-fetch-stats.txt >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+      continue-on-error: true
+
+    # ====== STAGE 3: ScanCode Deep Scan (Optimized) ======
     - name: Create ScanCode scan script
       run: |
         cat > scan_packages.py << 'EOF'
@@ -125,6 +172,14 @@ jobs:
         with open('uncertain-packages/uncertain-packages.json', 'r') as f:
             uncertain = json.load(f)
 
+        # Load PyPI fetch results to skip packages with licenses already found
+        pypi_found_ids = set()
+        if Path('pypi-licenses/pypi-licenses-found.json').exists():
+            with open('pypi-licenses/pypi-licenses-found.json', 'r') as f:
+                pypi_data = json.load(f)
+                pypi_found_ids = {pkg['id'] for pkg in pypi_data.get('packages', [])}
+                print(f"PyPI found licenses for {len(pypi_found_ids)} packages - skipping ScanCode for these")
+
         # Load scan list
         with open('uncertain-packages/scan-list.txt', 'r') as f:
             scan_ids = [line.strip() for line in f]
@@ -133,8 +188,15 @@ jobs:
         downloads_dir.mkdir(exist_ok=True)
 
         scanned = 0
+        skipped_pypi = 0
         for pkg in uncertain:
             if pkg['id'] not in scan_ids:
+                continue
+
+            # Skip if PyPI already found a license
+            if pkg['id'] in pypi_found_ids:
+                print(f"Skipping {pkg['name']} - license found in PyPI")
+                skipped_pypi += 1
                 continue
 
             pkg_name = pkg['name'].replace('/', '-').replace(':', '-')
@@ -187,7 +249,10 @@ jobs:
                 print(f"Reached scan limit of 20 packages")
                 break
 
-        print(f"ScanCode completed for {scanned} packages")
+        print(f"\n=== ScanCode Summary ===")
+        print(f"Packages scanned: {scanned}")
+        print(f"Packages skipped (license found in PyPI): {skipped_pypi}")
+        print(f"Total packages processed: {scanned + skipped_pypi}")
         EOF
       continue-on-error: true
 
@@ -483,6 +548,16 @@ jobs:
           cp uncertain-packages/report.md public/uncertain-packages-report.md
         fi
 
+        # Copy PyPI license fetch results
+        if [ -d pypi-licenses ] && [ "$(ls -A pypi-licenses)" ]; then
+          mkdir -p public/pypi-licenses
+          cp pypi-licenses/*.json public/pypi-licenses/ 2>/dev/null || true
+          cp pypi-licenses/*.csv public/pypi-licenses/ 2>/dev/null || true
+          cp pypi-licenses/*.yml public/pypi-licenses/ 2>/dev/null || true
+          cp pypi-licenses/*.txt public/pypi-licenses/ 2>/dev/null || true
+          echo "  ✓ PyPI license fetch results"
+        fi
+
         # Copy background image
         if [ -f background.jpg ] || [ -f background.png ]; then
           cp background.* public/ 2>/dev/null || true
@@ -539,6 +614,7 @@ jobs:
           curation-report-enhanced.html
           enhanced-spdx/
           uncertain-packages/
+          pypi-licenses/
         retention-days: 30
 
     # ====== STAGE 9: Summary & PR Comment ======
@@ -551,6 +627,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Tools Used:" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ ORT Analyzer & Advisor" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ PyPI API License Fetcher (fast license retrieval)" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ ScanCode Toolkit (deep license scanning)" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ SPDX Validation & Enhancement" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ Azure OpenAI GPT-4 (AI curation)" >> $GITHUB_STEP_SUMMARY
@@ -579,18 +656,20 @@ jobs:
           comment += '### 🛠️ Analysis Pipeline\n\n';
           comment += '1. **ORT Analyzer** - Dependency analysis\n';
           comment += '2. **ORT Advisor** - Vulnerability scanning\n';
-          comment += '3. **ScanCode Toolkit** - Deep license detection\n';
-          comment += '4. **SPDX Enhancement** - Merge & validation\n';
-          comment += '5. **AI Curation** - GPT-4 powered recommendations\n\n';
+          comment += '3. **PyPI API Fetch** - Fast license retrieval from package registries\n';
+          comment += '4. **ScanCode Toolkit** - Deep license detection (optimized)\n';
+          comment += '5. **SPDX Enhancement** - Merge & validation\n';
+          comment += '6. **AI Curation** - GPT-4 powered recommendations\n\n';
           comment += '### 📊 View Reports\n\n';
           comment += '- 🌐 [Enhanced Reports (GitHub Pages)](https://' + context.repo.owner + '.github.io/' + context.repo.repo + '/)\n';
           comment += '- 📥 [Download All Artifacts](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')\n\n';
           comment += '**What\'s New:**\n';
-          comment += '- ScanCode enhanced ~X packages with missing licenses\n';
+          comment += '- PyPI API fetched licenses for PyPI packages (fast, no scanning needed)\n';
+          comment += '- ScanCode enhanced remaining packages with missing licenses\n';
           comment += '- AI analyzed license conflicts with actionable recommendations\n';
           comment += '- Validated and fixed SPDX compliance issues\n\n';
           comment += '---\n';
-          comment += '*💡 Enhanced curation provides deeper license analysis than standard ORT*\n';
+          comment += '*💡 Enhanced multi-tool approach maximizes license detection coverage*\n';
 
           github.rest.issues.createComment({
             issue_number: context.issue.number,
