@@ -190,7 +190,19 @@ class LicenseComparison:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         scan_data = json.load(f)
 
-                    # Extract licenses from scan
+                    # First, check package-level license (from package manifest)
+                    # This is more reliable for well-packaged software
+                    package_level_license = None
+                    packages_section = scan_data.get('packages', [])
+
+                    if packages_section and len(packages_section) > 0:
+                        pkg_info = packages_section[0]  # Usually just one package per scan
+                        package_level_license = pkg_info.get('declared_license_expression_spdx')
+
+                        if package_level_license and package_level_license not in ['NOASSERTION', 'NONE', '']:
+                            print(f"      Found package-level license: {package_level_license}")
+
+                    # Also extract file-level licenses as backup/supplementary info
                     license_detections = defaultdict(int)
 
                     for file_info in scan_data.get('files', []):
@@ -204,18 +216,33 @@ class LicenseComparison:
                                 if spdx_key:
                                     license_detections[spdx_key] += 1
 
-                    if matched_pkg_id in self.packages and license_detections:
-                        # Sort by detection count (most detected = primary license)
-                        sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+                    # Use package-level license if available, otherwise use file-level
+                    if matched_pkg_id in self.packages:
+                        if package_level_license:
+                            # Use package-level license (most reliable)
+                            self.packages[matched_pkg_id]['scancode_concluded'] = package_level_license
 
-                        self.packages[matched_pkg_id]['scancode_licenses'] = [
-                            {'license': lic, 'count': count} for lic, count in sorted_licenses
-                        ]
+                            # Also store file-level detections if any
+                            if license_detections:
+                                sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+                                self.packages[matched_pkg_id]['scancode_licenses'] = [
+                                    {'license': lic, 'count': count} for lic, count in sorted_licenses
+                                ]
 
-                        # Primary license is most frequently detected
-                        self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
-                        scancode_count += 1
-                        print(f"      Found license: {sorted_licenses[0][0]} (detected in {sorted_licenses[0][1]} files)")
+                            scancode_count += 1
+
+                        elif license_detections:
+                            # No package-level license, use file-level detections
+                            sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+
+                            self.packages[matched_pkg_id]['scancode_licenses'] = [
+                                {'license': lic, 'count': count} for lic, count in sorted_licenses
+                            ]
+
+                            # Primary license is most frequently detected
+                            self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
+                            scancode_count += 1
+                            print(f"      Found file-level license: {sorted_licenses[0][0]} (detected in {sorted_licenses[0][1]} files)")
 
                 except Exception as e:
                     print(f"   ⚠️  Error processing {json_file.name}: {e}")
@@ -229,7 +256,15 @@ class LicenseComparison:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         scan_data = json.load(f)
 
-                    # Extract licenses from scan
+                    # First, check package-level license (from package manifest)
+                    package_level_license = None
+                    packages_section = scan_data.get('packages', [])
+
+                    if packages_section and len(packages_section) > 0:
+                        pkg_info = packages_section[0]
+                        package_level_license = pkg_info.get('declared_license_expression_spdx')
+
+                    # Also extract file-level licenses
                     license_detections = defaultdict(int)
 
                     for file_info in scan_data.get('files', []):
@@ -260,17 +295,31 @@ class LicenseComparison:
                                 matched_pkg_id = pkg_id
                                 best_match_score = match_score
 
-                    if matched_pkg_id and license_detections:
-                        # Sort by detection count (most detected = primary license)
-                        sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+                    if matched_pkg_id:
+                        if package_level_license and package_level_license not in ['NOASSERTION', 'NONE', '']:
+                            # Use package-level license
+                            self.packages[matched_pkg_id]['scancode_concluded'] = package_level_license
 
-                        self.packages[matched_pkg_id]['scancode_licenses'] = [
-                            {'license': lic, 'count': count} for lic, count in sorted_licenses
-                        ]
+                            # Also store file-level detections if any
+                            if license_detections:
+                                sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+                                self.packages[matched_pkg_id]['scancode_licenses'] = [
+                                    {'license': lic, 'count': count} for lic, count in sorted_licenses
+                                ]
 
-                        # Primary license is most frequently detected
-                        self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
-                        scancode_count += 1
+                            scancode_count += 1
+
+                        elif license_detections:
+                            # Use file-level detections
+                            sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+
+                            self.packages[matched_pkg_id]['scancode_licenses'] = [
+                                {'license': lic, 'count': count} for lic, count in sorted_licenses
+                            ]
+
+                            # Primary license is most frequently detected
+                            self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
+                            scancode_count += 1
 
                 except Exception as e:
                     print(f"   ⚠️  Error processing {json_file.name}: {e}")
