@@ -16,6 +16,7 @@ def generate_landing_page(public_dir='public'):
     ai_main_report = ''
     ai_conflict_report = ''
     ai_missing_licenses = ''
+    license_comparison = ''
     cyclonedx = ''
     spdx_enhanced = ''
     spdx_original = ''
@@ -41,6 +42,9 @@ def generate_landing_page(public_dir='public'):
 
     if (public_path / 'curation-report-conflicts.html').exists():
         ai_conflict_report = 'curation-report-conflicts.html'
+
+    if (public_path / 'license-comparison.html').exists():
+        license_comparison = 'license-comparison.html'
 
     if (public_path / 'bom.cyclonedx.json').exists():
         cyclonedx = 'bom.cyclonedx.json'
@@ -81,6 +85,7 @@ def generate_landing_page(public_dir='public'):
     print(f"  AI Main Report: {ai_main_report or 'N/A'}")
     print(f"  AI Conflict Report: {ai_conflict_report or 'N/A'}")
     print(f"  AI Missing Licenses: {ai_missing_licenses or 'N/A'}")
+    print(f"  License Comparison: {license_comparison or 'N/A'}")
     print(f"  CycloneDX: {cyclonedx or 'N/A'}")
     print(f"  SPDX Enhanced: {spdx_enhanced or 'N/A'}")
     print(f"  SPDX Original: {spdx_original or 'N/A'}")
@@ -217,6 +222,16 @@ def generate_landing_page(public_dir='public'):
         <div class="report-icon">🔍</div>
         <div class="report-title">Missing Licenses Analysis <span class="badge">AI RESEARCH</span></div>
         <div class="report-desc">AI-powered license suggestions for packages with missing or blank licenses</div>
+      </a>
+'''
+
+    # Add Multi-Layer License Comparison
+    if license_comparison:
+        html += f'''
+      <a href="{license_comparison}" class="report-card highlight">
+        <div class="report-icon">📊</div>
+        <div class="report-title">Multi-Layer License Comparison <span class="badge">ALL SOURCES</span></div>
+        <div class="report-desc">Comprehensive license comparison from ORT, PyPI API, and ScanCode with conflict detection</div>
       </a>
 '''
 
