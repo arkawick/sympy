@@ -20,13 +20,16 @@ from collections import defaultdict
 
 class LicenseComparison:
     def __init__(self, ort_result_path: str, pypi_results_path: Optional[str],
-                 scancode_results_dir: Optional[str], spdx_path: Optional[str]):
+                 scancode_results_dir: Optional[str], spdx_path: Optional[str],
+                 uncertain_packages_path: Optional[str] = None):
         self.ort_result_path = Path(ort_result_path)
         self.pypi_results_path = Path(pypi_results_path) if pypi_results_path else None
         self.scancode_results_dir = Path(scancode_results_dir) if scancode_results_dir else None
         self.spdx_path = Path(spdx_path) if spdx_path else None
+        self.uncertain_packages_path = Path(uncertain_packages_path) if uncertain_packages_path else None
 
         self.packages = {}  # Package ID -> License info from all sources
+        self.uncertain_packages = {}  # Package ID -> uncertain package info (for ScanCode matching)
 
     def load_ort_licenses(self):
         """Extract declared licenses from ORT analyzer results."""
@@ -77,6 +80,24 @@ class LicenseComparison:
 
         print(f"✓ Loaded {len(self.packages)} packages from ORT")
 
+    def load_uncertain_packages(self):
+        """Load uncertain packages list (needed for ScanCode matching)."""
+        if not self.uncertain_packages_path or not self.uncertain_packages_path.exists():
+            print("⚠️  Uncertain packages file not found, will try basic ScanCode matching...")
+            return
+
+        print("📋 Loading uncertain packages list...")
+
+        with open(self.uncertain_packages_path, 'r', encoding='utf-8') as f:
+            uncertain_list = json.load(f)
+
+        for pkg in uncertain_list:
+            pkg_id = pkg.get('id', '')
+            if pkg_id:
+                self.uncertain_packages[pkg_id] = pkg
+
+        print(f"✓ Loaded {len(self.uncertain_packages)} uncertain packages")
+
     def load_pypi_licenses(self):
         """Extract licenses from PyPI API fetch results."""
         if not self.pypi_results_path or not self.pypi_results_path.exists():
@@ -110,7 +131,11 @@ class LicenseComparison:
         print(f"✓ Loaded PyPI licenses for {pypi_count} packages")
 
     def load_scancode_licenses(self):
-        """Extract concluded licenses from ScanCode results."""
+        """Extract concluded licenses from ScanCode results.
+
+        ScanCode only runs on uncertain packages (packages with missing licenses after ORT+PyPI).
+        Files are named: {package-name}-{version}.json
+        """
         if not self.scancode_results_dir or not self.scancode_results_dir.exists():
             print("⚠️  ScanCode results not found, skipping...")
             return
@@ -118,58 +143,137 @@ class LicenseComparison:
         print("🔍 Loading ScanCode licenses...")
 
         scancode_files = list(self.scancode_results_dir.glob("*.json"))
+        print(f"   Found {len(scancode_files)} ScanCode JSON files")
+
+        if not scancode_files:
+            print("   No ScanCode results to process")
+            return
+
         scancode_count = 0
 
-        for json_file in scancode_files:
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    scan_data = json.load(f)
+        # If we have uncertain packages list, use it for accurate matching
+        if self.uncertain_packages:
+            print(f"   Using uncertain packages list for matching ({len(self.uncertain_packages)} packages)")
 
-                # Extract licenses from scan
-                license_detections = defaultdict(int)
+            for json_file in scancode_files:
+                try:
+                    # Extract package name and version from filename
+                    # Format: package-name-version.json
+                    file_stem = json_file.stem
 
-                for file_info in scan_data.get('files', []):
-                    if file_info.get('type') != 'file':
+                    # Try to match this file to an uncertain package
+                    matched_pkg_id = None
+
+                    for pkg_id, uncertain_pkg in self.uncertain_packages.items():
+                        pkg_name = uncertain_pkg.get('name', '')
+                        pkg_version = uncertain_pkg.get('version', '')
+
+                        # Build expected filename (same as workflow logic)
+                        expected_name = f"{pkg_name}-{pkg_version}".replace('/', '-').replace(':', '-')
+
+                        if file_stem.lower() == expected_name.lower():
+                            matched_pkg_id = pkg_id
+                            print(f"   ✓ Matched {json_file.name} to {pkg_id}")
+                            break
+
+                        # Also try without version
+                        if file_stem.lower().startswith(pkg_name.lower().replace('/', '-').replace(':', '-')):
+                            matched_pkg_id = pkg_id
+                            print(f"   ✓ Matched {json_file.name} to {pkg_id} (partial match)")
+                            break
+
+                    if not matched_pkg_id:
+                        print(f"   ⚠️  Could not match {json_file.name} to any uncertain package")
                         continue
 
-                    for lic in file_info.get('licenses', []):
-                        score = lic.get('score', 0)
-                        if score >= 80:  # High confidence only
-                            spdx_key = lic.get('spdx_license_key', lic.get('key', ''))
-                            if spdx_key:
-                                license_detections[spdx_key] += 1
+                    # Load and parse ScanCode results
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        scan_data = json.load(f)
 
-                # Match to package by fuzzy name matching
-                pkg_name_from_file = json_file.stem.lower()
+                    # Extract licenses from scan
+                    license_detections = defaultdict(int)
 
-                matched_pkg_id = None
-                best_match_score = 0
+                    for file_info in scan_data.get('files', []):
+                        if file_info.get('type') != 'file':
+                            continue
 
-                for pkg_id, pkg_info in self.packages.items():
-                    pkg_name = pkg_info['name'].lower()
-                    pkg_name_normalized = pkg_name.replace('_', '-').replace('.', '-')
+                        for lic in file_info.get('licenses', []):
+                            score = lic.get('score', 0)
+                            if score >= 80:  # High confidence only
+                                spdx_key = lic.get('spdx_license_key', lic.get('key', ''))
+                                if spdx_key:
+                                    license_detections[spdx_key] += 1
 
-                    # Try exact match first
-                    if pkg_name_normalized in pkg_name_from_file or pkg_name_from_file.startswith(pkg_name_normalized):
-                        match_score = len(pkg_name_normalized)
-                        if match_score > best_match_score:
-                            matched_pkg_id = pkg_id
-                            best_match_score = match_score
+                    if matched_pkg_id in self.packages and license_detections:
+                        # Sort by detection count (most detected = primary license)
+                        sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
 
-                if matched_pkg_id and license_detections:
-                    # Sort by detection count (most detected = primary license)
-                    sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+                        self.packages[matched_pkg_id]['scancode_licenses'] = [
+                            {'license': lic, 'count': count} for lic, count in sorted_licenses
+                        ]
 
-                    self.packages[matched_pkg_id]['scancode_licenses'] = [
-                        {'license': lic, 'count': count} for lic, count in sorted_licenses
-                    ]
+                        # Primary license is most frequently detected
+                        self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
+                        scancode_count += 1
+                        print(f"      Found license: {sorted_licenses[0][0]} (detected in {sorted_licenses[0][1]} files)")
 
-                    # Primary license is most frequently detected
-                    self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
-                    scancode_count += 1
+                except Exception as e:
+                    print(f"   ⚠️  Error processing {json_file.name}: {e}")
 
-            except Exception as e:
-                print(f"   ⚠️  Error processing {json_file.name}: {e}")
+        else:
+            # Fallback: try fuzzy matching if no uncertain packages list
+            print("   No uncertain packages list - using fuzzy matching")
+
+            for json_file in scancode_files:
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        scan_data = json.load(f)
+
+                    # Extract licenses from scan
+                    license_detections = defaultdict(int)
+
+                    for file_info in scan_data.get('files', []):
+                        if file_info.get('type') != 'file':
+                            continue
+
+                        for lic in file_info.get('licenses', []):
+                            score = lic.get('score', 0)
+                            if score >= 80:  # High confidence only
+                                spdx_key = lic.get('spdx_license_key', lic.get('key', ''))
+                                if spdx_key:
+                                    license_detections[spdx_key] += 1
+
+                    # Match to package by fuzzy name matching
+                    pkg_name_from_file = json_file.stem.lower()
+
+                    matched_pkg_id = None
+                    best_match_score = 0
+
+                    for pkg_id, pkg_info in self.packages.items():
+                        pkg_name = pkg_info['name'].lower()
+                        pkg_name_normalized = pkg_name.replace('_', '-').replace('.', '-')
+
+                        # Try exact match first
+                        if pkg_name_normalized in pkg_name_from_file or pkg_name_from_file.startswith(pkg_name_normalized):
+                            match_score = len(pkg_name_normalized)
+                            if match_score > best_match_score:
+                                matched_pkg_id = pkg_id
+                                best_match_score = match_score
+
+                    if matched_pkg_id and license_detections:
+                        # Sort by detection count (most detected = primary license)
+                        sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+
+                        self.packages[matched_pkg_id]['scancode_licenses'] = [
+                            {'license': lic, 'count': count} for lic, count in sorted_licenses
+                        ]
+
+                        # Primary license is most frequently detected
+                        self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
+                        scancode_count += 1
+
+                except Exception as e:
+                    print(f"   ⚠️  Error processing {json_file.name}: {e}")
 
         print(f"✓ Loaded ScanCode licenses for {scancode_count} packages")
 
@@ -735,6 +839,10 @@ def main():
         help='Path to enhanced SPDX document (optional)'
     )
     parser.add_argument(
+        '--uncertain-packages',
+        help='Path to uncertain-packages.json (needed for accurate ScanCode matching)'
+    )
+    parser.add_argument(
         '--output',
         default='license-comparison.html',
         help='Output HTML file path (default: license-comparison.html)'
@@ -749,6 +857,7 @@ def main():
     print(f"   ORT Result: {args.ort_result}")
     print(f"   PyPI Results: {args.pypi_results or 'Not provided'}")
     print(f"   ScanCode Directory: {args.scancode_dir or 'Not provided'}")
+    print(f"   Uncertain Packages: {args.uncertain_packages or 'Not provided'}")
     print(f"   SPDX Document: {args.spdx or 'Not provided'}")
     print(f"\n📄 Output File: {args.output}")
     print("\n" + "=" * 80 + "\n")
@@ -758,13 +867,16 @@ def main():
         ort_result_path=args.ort_result,
         pypi_results_path=args.pypi_results,
         scancode_results_dir=args.scancode_dir,
-        spdx_path=args.spdx
+        spdx_path=args.spdx,
+        uncertain_packages_path=args.uncertain_packages
     )
 
     # Load data from all sources
+    # IMPORTANT: Load uncertain packages BEFORE ScanCode for accurate matching
     comparison.load_ort_licenses()
+    comparison.load_uncertain_packages()  # Load this first for ScanCode matching
     comparison.load_pypi_licenses()
-    comparison.load_scancode_licenses()
+    comparison.load_scancode_licenses()  # Now this can use uncertain packages for matching
     comparison.load_spdx_concluded()
 
     # Generate report

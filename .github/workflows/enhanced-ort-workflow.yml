@@ -500,6 +500,12 @@ jobs:
           echo "  ✓ ScanCode results found"
         fi
 
+        UNCERTAIN_PACKAGES=""
+        if [ -f uncertain-packages/uncertain-packages.json ]; then
+          UNCERTAIN_PACKAGES="--uncertain-packages uncertain-packages/uncertain-packages.json"
+          echo "  ✓ Uncertain packages list found"
+        fi
+
         SPDX_DOC=""
         if [ -f enhanced-spdx/bom-enhanced-fixed.spdx.json ]; then
           SPDX_DOC="--spdx enhanced-spdx/bom-enhanced-fixed.spdx.json"
@@ -515,6 +521,7 @@ jobs:
           --ort-result ort-results/analyzer/analyzer-result.yml \
           $PYPI_RESULTS \
           $SCANCODE_DIR \
+          $UNCERTAIN_PACKAGES \
           $SPDX_DOC \
           --output license-comparison.html 2>&1 | tee license-comparison.log
 
