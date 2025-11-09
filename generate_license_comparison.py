@@ -89,19 +89,25 @@ class LicenseComparison:
             pypi_data = json.load(f)
 
         packages_analyzed = pypi_data.get('packages', [])
+        pypi_count = 0
 
         for pkg in packages_analyzed:
-            pkg_id = pkg.get('package_id', '')
-            pypi_info = pkg.get('pypi_info', {})
+            pkg_id = pkg.get('id', '')
+            fetched_license = pkg.get('fetched_license', {})
 
-            if pkg_id in self.packages and pypi_info:
-                license_found = pypi_info.get('license')
-                license_expr = pypi_info.get('license_expression')
+            if pkg_id in self.packages and fetched_license:
+                # Check if fetch was successful
+                if fetched_license.get('success'):
+                    license_found = fetched_license.get('license', '')
+                    license_expr = fetched_license.get('license_expression', '')
 
-                self.packages[pkg_id]['pypi_license'] = license_found
-                self.packages[pkg_id]['pypi_expression'] = license_expr
+                    # Only set if we actually found a license
+                    if license_found and license_found.lower() not in ['unknown', 'none', '', 'n/a']:
+                        self.packages[pkg_id]['pypi_license'] = license_found
+                        self.packages[pkg_id]['pypi_expression'] = license_expr
+                        pypi_count += 1
 
-        print(f"✓ Loaded PyPI licenses")
+        print(f"✓ Loaded PyPI licenses for {pypi_count} packages")
 
     def load_scancode_licenses(self):
         """Extract concluded licenses from ScanCode results."""
@@ -112,46 +118,60 @@ class LicenseComparison:
         print("🔍 Loading ScanCode licenses...")
 
         scancode_files = list(self.scancode_results_dir.glob("*.json"))
+        scancode_count = 0
 
         for json_file in scancode_files:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                scan_data = json.load(f)
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    scan_data = json.load(f)
 
-            # Extract licenses from scan
-            license_detections = defaultdict(int)
+                # Extract licenses from scan
+                license_detections = defaultdict(int)
 
-            for file_info in scan_data.get('files', []):
-                if file_info.get('type') != 'file':
-                    continue
+                for file_info in scan_data.get('files', []):
+                    if file_info.get('type') != 'file':
+                        continue
 
-                for lic in file_info.get('licenses', []):
-                    score = lic.get('score', 0)
-                    if score >= 80:  # High confidence only
-                        spdx_key = lic.get('spdx_license_key', lic.get('key', ''))
-                        license_detections[spdx_key] += 1
+                    for lic in file_info.get('licenses', []):
+                        score = lic.get('score', 0)
+                        if score >= 80:  # High confidence only
+                            spdx_key = lic.get('spdx_license_key', lic.get('key', ''))
+                            if spdx_key:
+                                license_detections[spdx_key] += 1
 
-            # Match to package by fuzzy name matching
-            pkg_name_from_file = json_file.stem.lower()
+                # Match to package by fuzzy name matching
+                pkg_name_from_file = json_file.stem.lower()
 
-            matched_pkg_id = None
-            for pkg_id, pkg_info in self.packages.items():
-                pkg_name = pkg_info['name'].lower().replace('_', '-').replace('.', '-')
-                if pkg_name in pkg_name_from_file or pkg_name_from_file.startswith(pkg_name):
-                    matched_pkg_id = pkg_id
-                    break
+                matched_pkg_id = None
+                best_match_score = 0
 
-            if matched_pkg_id and license_detections:
-                # Sort by detection count
-                sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
+                for pkg_id, pkg_info in self.packages.items():
+                    pkg_name = pkg_info['name'].lower()
+                    pkg_name_normalized = pkg_name.replace('_', '-').replace('.', '-')
 
-                self.packages[matched_pkg_id]['scancode_licenses'] = [
-                    {'license': lic, 'count': count} for lic, count in sorted_licenses
-                ]
+                    # Try exact match first
+                    if pkg_name_normalized in pkg_name_from_file or pkg_name_from_file.startswith(pkg_name_normalized):
+                        match_score = len(pkg_name_normalized)
+                        if match_score > best_match_score:
+                            matched_pkg_id = pkg_id
+                            best_match_score = match_score
 
-                # Primary license is most detected
-                self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
+                if matched_pkg_id and license_detections:
+                    # Sort by detection count (most detected = primary license)
+                    sorted_licenses = sorted(license_detections.items(), key=lambda x: x[1], reverse=True)
 
-        print(f"✓ Loaded ScanCode licenses")
+                    self.packages[matched_pkg_id]['scancode_licenses'] = [
+                        {'license': lic, 'count': count} for lic, count in sorted_licenses
+                    ]
+
+                    # Primary license is most frequently detected
+                    self.packages[matched_pkg_id]['scancode_concluded'] = sorted_licenses[0][0]
+                    scancode_count += 1
+
+            except Exception as e:
+                print(f"   ⚠️  Error processing {json_file.name}: {e}")
+
+        print(f"✓ Loaded ScanCode licenses for {scancode_count} packages")
 
     def load_spdx_concluded(self):
         """Extract concluded licenses from enhanced SPDX document."""
@@ -225,6 +245,15 @@ class LicenseComparison:
         complete = sum(1 for p in packages_list if self.determine_status(p) == 'complete')
         conflicts = sum(1 for p in packages_list if self.determine_status(p) == 'conflict')
         missing = sum(1 for p in packages_list if self.determine_status(p) == 'missing')
+
+        # Count how many packages have data from each source
+        with_ort = sum(1 for p in packages_list if p['ort_spdx'] != 'NOASSERTION')
+        with_pypi = sum(1 for p in packages_list if p.get('pypi_license'))
+        with_scancode = sum(1 for p in packages_list if p.get('scancode_concluded'))
+
+        print(f"   Packages with ORT data: {with_ort}")
+        print(f"   Packages with PyPI data: {with_pypi}")
+        print(f"   Packages with ScanCode data: {with_scancode}")
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -521,6 +550,24 @@ class LicenseComparison:
             </div>
         </div>
 
+        <div style="padding: 20px 40px; background: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+            <h3 style="margin-bottom: 15px; color: #1f2937;">📊 Data Sources Coverage</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 12px; height: 12px; background: #10b981; border-radius: 50%;"></div>
+                    <span><strong>ORT:</strong> {with_ort}/{total} packages ({with_ort/total*100:.1f}%)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 12px; height: 12px; background: #3b82f6; border-radius: 50%;"></div>
+                    <span><strong>PyPI API:</strong> {with_pypi}/{total} packages ({with_pypi/total*100:.1f}%)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 12px; height: 12px; background: #f59e0b; border-radius: 50%;"></div>
+                    <span><strong>ScanCode:</strong> {with_scancode}/{total} packages ({with_scancode/total*100:.1f}%)</span>
+                </div>
+            </div>
+        </div>
+
         <div class="filters">
             <div class="filter-buttons">
                 <button class="filter-btn active" onclick="filterTable('all')">All Packages</button>
@@ -695,6 +742,17 @@ def main():
 
     args = parser.parse_args()
 
+    print("=" * 80)
+    print("MULTI-LAYER LICENSE COMPARISON REPORT GENERATOR")
+    print("=" * 80)
+    print("\n📂 Input Files:")
+    print(f"   ORT Result: {args.ort_result}")
+    print(f"   PyPI Results: {args.pypi_results or 'Not provided'}")
+    print(f"   ScanCode Directory: {args.scancode_dir or 'Not provided'}")
+    print(f"   SPDX Document: {args.spdx or 'Not provided'}")
+    print(f"\n📄 Output File: {args.output}")
+    print("\n" + "=" * 80 + "\n")
+
     # Create comparison object
     comparison = LicenseComparison(
         ort_result_path=args.ort_result,
@@ -712,7 +770,9 @@ def main():
     # Generate report
     comparison.generate_html_report(args.output)
 
-    print("\n✅ License comparison report generation complete!")
+    print("\n" + "=" * 80)
+    print("✅ License comparison report generation complete!")
+    print("=" * 80)
 
 
 if __name__ == '__main__':
