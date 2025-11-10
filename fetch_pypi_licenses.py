@@ -109,6 +109,49 @@ class ORTLicenseAnalyzer:
         print(f"🔍 Found {len(self.missing_licenses)} packages with missing/uncertain licenses")
         return self.missing_licenses
 
+    def _parse_license_from_classifier(self, classifier: str) -> str:
+        """
+        Parse PyPI classifier to extract SPDX license identifier.
+
+        Example classifiers:
+        - "License :: OSI Approved :: BSD License" → "BSD-3-Clause"
+        - "License :: OSI Approved :: MIT License" → "MIT"
+        - "License :: OSI Approved :: Apache Software License" → "Apache-2.0"
+        """
+        classifier_lower = classifier.lower()
+
+        # Common PyPI classifier → SPDX mappings
+        mappings = {
+            'mit license': 'MIT',
+            'apache software license': 'Apache-2.0',
+            'bsd license': 'BSD-3-Clause',
+            'gnu general public license (gpl)': 'GPL-3.0-or-later',
+            'gnu general public license v2 (gplv2)': 'GPL-2.0-only',
+            'gnu general public license v3 (gplv3)': 'GPL-3.0-only',
+            'gnu lesser general public license v2 (lgplv2)': 'LGPL-2.1-only',
+            'gnu lesser general public license v3 (lgplv3)': 'LGPL-3.0-only',
+            'mozilla public license 2.0 (mpl 2.0)': 'MPL-2.0',
+            'python software foundation license': 'PSF-2.0',
+            'isc license (iscl)': 'ISC',
+            'zope public license': 'ZPL-2.1',
+        }
+
+        # Try to match against known patterns
+        for pattern, spdx_id in mappings.items():
+            if pattern in classifier_lower:
+                return spdx_id
+
+        # Fallback: extract the last part of the classifier
+        # "License :: OSI Approved :: BSD License" → "BSD License"
+        parts = classifier.split('::')
+        if len(parts) >= 3:
+            license_name = parts[-1].strip()
+            # Remove "License" suffix if present
+            license_name = license_name.replace(' License', '').replace(' license', '').strip()
+            return license_name
+
+        return ''
+
     def fetch_pypi_license(self, package_name: str, version: str) -> Dict:
         """Fetch license information from PyPI API."""
         url = f"https://pypi.org/pypi/{package_name}/{version}/json"
@@ -128,8 +171,13 @@ class ORTLicenseAnalyzer:
             # Extract license from classifiers
             license_classifiers = [c for c in classifiers if c.startswith('License ::')]
 
-            # Determine the best license info
-            determined_license = license_expression or license_info or ''
+            # Try to parse SPDX license from classifiers
+            classifier_license = ''
+            if license_classifiers:
+                classifier_license = self._parse_license_from_classifier(license_classifiers[0])
+
+            # Determine the best license info (priority order)
+            determined_license = license_expression or license_info or classifier_license or ''
 
             # Clean up common non-informative values
             if determined_license.lower() in ['unknown', 'none', '', 'n/a']:
@@ -139,6 +187,7 @@ class ORTLicenseAnalyzer:
                 'license': determined_license,
                 'license_expression': license_expression,
                 'license_field': license_info,
+                'classifier_license': classifier_license,
                 'classifiers': license_classifiers,
                 'home_page': info.get('home_page', ''),
                 'project_urls': info.get('project_urls', {}),
