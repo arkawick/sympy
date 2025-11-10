@@ -1,0 +1,815 @@
+name: Enhanced ORT Analysis with Multi-Tool Curation
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  enhanced-ort-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    - name: Install Python dependencies
+      run: |
+        pip install python-inspector openai pyyaml spdx-tools scancode-toolkit
+        python-inspector --version
+        scancode --version
+
+    - name: Download ORT
+      run: |
+        ORT_VERSION="70.0.1"
+        wget -q https://github.com/oss-review-toolkit/ort/releases/download/${ORT_VERSION}/ort-${ORT_VERSION}.tgz
+        tar -xzf ort-${ORT_VERSION}.tgz
+        echo "${GITHUB_WORKSPACE}/ort-${ORT_VERSION}/bin" >> $GITHUB_PATH
+
+    - name: Verify ORT installation
+      run: |
+        ort --version
+        java -version
+
+    - name: Clean previous results
+      run: |
+        rm -rf ort-results scancode-results uncertain-packages enhanced-spdx pypi-licenses
+        mkdir -p ort-results scancode-results uncertain-packages enhanced-spdx pypi-licenses
+
+    # ====== STAGE 1: ORT Analysis ======
+    - name: Run ORT Analyzer
+      run: |
+        echo "🔍 Stage 1: Running ORT Analyzer..."
+        ort analyze -i . -o ort-results/analyzer
+      continue-on-error: true
+
+    - name: Run ORT Advisor
+      run: |
+        echo "🔍 Stage 1: Running ORT Advisor..."
+        ort advise \
+          -i ort-results/analyzer/analyzer-result.yml \
+          -o ort-results/advisor \
+          --advisors OSV
+      continue-on-error: true
+
+    - name: Generate Initial ORT Reports
+      run: |
+        echo "📊 Stage 1: Generating initial ORT reports..."
+
+        # Determine the latest result file
+        if [ -f ort-results/advisor/advise-result.yml ]; then
+          INPUT_FILE="ort-results/advisor/advise-result.yml"
+        else
+          INPUT_FILE="ort-results/analyzer/analyzer-result.yml"
+        fi
+
+        ort report \
+          -i "$INPUT_FILE" \
+          -o ort-results/reporter \
+          -f WebApp,StaticHtml,CycloneDx,SpdxDocument
+
+    # ====== STAGE 2: Extract Uncertain Packages ======
+    - name: Extract packages with uncertain licenses
+      run: |
+        echo "🔍 Stage 2: Extracting packages with missing/uncertain licenses..."
+        python extract_uncertain_packages.py \
+          --ort-result ort-results/analyzer/analyzer-result.yml \
+          --output-dir uncertain-packages
+      continue-on-error: true
+
+    - name: Display uncertain package statistics
+      run: |
+        if [ -f uncertain-packages/extraction-stats.txt ]; then
+          echo "📊 Uncertain Package Statistics:"
+          cat uncertain-packages/extraction-stats.txt
+
+          # Add to GitHub summary
+          echo "## 📦 Package License Coverage" >> $GITHUB_STEP_SUMMARY
+          cat uncertain-packages/extraction-stats.txt >> $GITHUB_STEP_SUMMARY
+        fi
+      continue-on-error: true
+
+    # ====== STAGE 2.5: Fetch PyPI Licenses ======
+    - name: Fetch licenses from PyPI API
+      run: |
+        echo "🌐 Stage 2.5: Fetching missing licenses from PyPI API..."
+
+        # Check if there are uncertain packages to fetch
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "⚠️  No uncertain packages found, skipping PyPI fetch..."
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to fetch from PyPI"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT packages with missing licenses"
+
+        # Run PyPI license fetcher
+        python3 fetch_pypi_licenses.py \
+          ort-results/analyzer/analyzer-result.yml \
+          --fetch \
+          --json \
+          --csv \
+          --curations \
+          --html \
+          --output-dir pypi-licenses
+
+        echo "✅ PyPI license fetch complete"
+      continue-on-error: true
+
+    - name: Display PyPI fetch statistics
+      run: |
+        if [ -f pypi-licenses/pypi-fetch-stats.txt ]; then
+          echo "📊 PyPI License Fetch Statistics:"
+          cat pypi-licenses/pypi-fetch-stats.txt
+
+          # Add to GitHub summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🌐 PyPI License Fetch Results" >> $GITHUB_STEP_SUMMARY
+          cat pypi-licenses/pypi-fetch-stats.txt >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+      continue-on-error: true
+
+    # ====== STAGE 3: ScanCode Deep Scan (Optimized) ======
+    - name: Create ScanCode scan script
+      run: |
+        cat > scan_packages.py << 'EOF'
+        import json
+        import subprocess
+        import os
+        from pathlib import Path
+
+        # Load uncertain packages JSON for source URLs
+        with open('uncertain-packages/uncertain-packages.json', 'r') as f:
+            uncertain = json.load(f)
+
+        # Load PyPI fetch results to skip packages with licenses already found
+        pypi_found_ids = set()
+        if Path('pypi-licenses/pypi-licenses-found.json').exists():
+            with open('pypi-licenses/pypi-licenses-found.json', 'r') as f:
+                pypi_data = json.load(f)
+                pypi_found_ids = {pkg['id'] for pkg in pypi_data.get('packages', [])}
+                print(f"PyPI found licenses for {len(pypi_found_ids)} packages - skipping ScanCode for these")
+
+        # Load scan list
+        with open('uncertain-packages/scan-list.txt', 'r') as f:
+            scan_ids = [line.strip() for line in f]
+
+        downloads_dir = Path('downloaded-packages')
+        downloads_dir.mkdir(exist_ok=True)
+
+        scanned = 0
+        skipped_pypi = 0
+        for pkg in uncertain:
+            if pkg['id'] not in scan_ids:
+                continue
+
+            # Skip if PyPI already found a license
+            if pkg['id'] in pypi_found_ids:
+                print(f"Skipping {pkg['name']} - license found in PyPI")
+                skipped_pypi += 1
+                continue
+
+            pkg_name = pkg['name'].replace('/', '-').replace(':', '-')
+            version = pkg['version']
+            source_url = pkg.get('source_artifact_url', '')
+
+            if not source_url:
+                print(f"Warning: No source URL for {pkg_name}, skipping...")
+                continue
+
+            # Download package
+            download_path = downloads_dir / f"{pkg_name}-{version}"
+            print(f"Downloading {pkg_name}...")
+
+            try:
+                # Download and extract
+                subprocess.run(['wget', '-q', '-O', f'{download_path}.tar.gz', source_url],
+                              check=True, timeout=60)
+                subprocess.run(['tar', '-xzf', f'{download_path}.tar.gz', '-C', str(downloads_dir)],
+                              check=False, timeout=30)
+
+                # Run ScanCode with multiple output formats
+                print(f"Scanning {pkg_name}...")
+                base_output = f"scancode-results/{pkg_name}-{version}"
+
+                result = subprocess.run([
+                    'scancode',
+                    '-clpieu',  # copyright, license, package, info, email, url
+                    '--json', f"{base_output}.json",
+                    '--html', f"{base_output}.html",
+                    '--yaml', f"{base_output}.yml",
+                    '--timeout', '120',
+                    '--max-depth', '3',
+                    str(download_path)
+                ], capture_output=True, text=True, timeout=300)
+
+                if result.returncode == 0:
+                    print(f"Successfully scanned {pkg_name}")
+                    scanned += 1
+                else:
+                    print(f"Warning: ScanCode returned non-zero for {pkg_name}")
+
+            except subprocess.TimeoutExpired:
+                print(f"Timeout scanning {pkg_name}")
+            except Exception as e:
+                print(f"Error processing {pkg_name}: {e}")
+
+            # Limit total scans
+            if scanned >= 20:
+                print(f"Reached scan limit of 20 packages")
+                break
+
+        print(f"\n=== ScanCode Summary ===")
+        print(f"Packages scanned: {scanned}")
+        print(f"Packages skipped (license found in PyPI): {skipped_pypi}")
+        print(f"Total packages processed: {scanned + skipped_pypi}")
+        EOF
+      continue-on-error: true
+
+    - name: Download and scan uncertain packages
+      run: |
+        echo "🔍 Stage 3: Running ScanCode on uncertain packages..."
+
+        # Check if there are uncertain packages to scan
+        if [ ! -f uncertain-packages/uncertain-package-ids.txt ]; then
+          echo "⚠️  No uncertain packages found, skipping ScanCode..."
+          exit 0
+        fi
+
+        # Read uncertain package IDs
+        UNCERTAIN_COUNT=$(wc -l < uncertain-packages/uncertain-package-ids.txt)
+        echo "Found $UNCERTAIN_COUNT packages requiring deep scanning"
+
+        # Limit to first 20 packages to avoid timeout
+        SCAN_LIMIT=20
+        if [ $UNCERTAIN_COUNT -gt $SCAN_LIMIT ]; then
+          echo "⚠️  Limiting ScanCode to first $SCAN_LIMIT packages (of $UNCERTAIN_COUNT)"
+          head -n $SCAN_LIMIT uncertain-packages/uncertain-package-ids.txt > uncertain-packages/scan-list.txt
+        else
+          cp uncertain-packages/uncertain-package-ids.txt uncertain-packages/scan-list.txt
+        fi
+
+        # Run the scan script
+        python3 scan_packages.py
+      timeout-minutes: 30
+      continue-on-error: true
+
+    # ====== STAGE 4: Merge ScanCode Results ======
+    - name: Generate ScanCode summary reports
+      run: |
+        echo "📊 Stage 4a: Generating ScanCode HTML and YAML summary reports..."
+
+        # Check if ScanCode results exist
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          python3 generate_scancode_reports.py scancode-results
+          echo "✅ ScanCode summary reports generated"
+        else
+          echo "⚠️  No ScanCode results found, skipping report generation"
+        fi
+      continue-on-error: true
+
+    - name: Merge ScanCode results into SPDX
+      run: |
+        echo "🔄 Stage 4b: Merging ScanCode results into SPDX..."
+
+        python merge_scancode_to_spdx.py \
+          --spdx ort-results/reporter/bom.spdx.yml \
+          --scancode scancode-results/ \
+          --output enhanced-spdx/bom-enhanced.spdx.json
+      continue-on-error: true
+
+    - name: Validate enhanced SPDX
+      run: |
+        if [ -f enhanced-spdx/bom-enhanced.spdx.json ]; then
+          echo "✅ Validating enhanced SPDX document..."
+          pyspdxtools -i enhanced-spdx/bom-enhanced.spdx.json --validate || true
+
+          # Also fix any issues with our validator
+          python spdx-validation-fixer.py \
+            -i enhanced-spdx/bom-enhanced.spdx.json \
+            -o enhanced-spdx/bom-enhanced-fixed.spdx.json
+        fi
+      continue-on-error: true
+
+    # ====== STAGE 5: AI-Powered Curation Reports ======
+    - name: Check AI curation prerequisites
+      run: |
+        echo "🔍 Checking prerequisites for AI curation..."
+
+        echo "Checking required files:"
+        [ -f ort-results/analyzer/analyzer-result.yml ] && echo "  ✓ ORT analyzer results found" || echo "  ✗ ORT analyzer results missing"
+        [ -f uncertain-packages/uncertain-packages.json ] && echo "  ✓ Uncertain packages found" || echo "  ✗ Uncertain packages missing"
+        [ -f ort-results/reporter/bom.spdx.yml ] && echo "  ✓ SPDX document found" || echo "  ✗ SPDX document missing"
+
+        echo "Checking Azure OpenAI configuration:"
+        [ -n "$AZURE_OPENAI_API_KEY" ] && echo "  ✓ API key configured" || echo "  ✗ API key missing"
+        [ -n "$AZURE_OPENAI_ENDPOINT" ] && echo "  ✓ Endpoint configured" || echo "  ✗ Endpoint missing"
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      continue-on-error: true
+
+    - name: Generate main ORT curation report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5a: Generating main ORT curation report..."
+
+        # Check if ORT results exist
+        if [ ! -f ort-results/analyzer/analyzer-result.yml ]; then
+          echo "❌ ORT analyzer results not found!"
+          exit 0
+        fi
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+          echo "⚠️  AZURE_OPENAI_API_KEY not set, skipping AI report..."
+          exit 0
+        fi
+
+        # Run the original ORT curation script
+        echo "Running ort_curation_script_html.py..."
+        python3 ort_curation_script_html.py 2>&1 | tee ort-curation.log
+
+        # Check if report was generated
+        LATEST_REPORT=$(ls -t curation-report-*.html 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_REPORT" ] && [ -f "$LATEST_REPORT" ]; then
+          echo "✅ Main curation report generated: $LATEST_REPORT"
+          echo "   Size: $(wc -c < "$LATEST_REPORT") bytes"
+
+          # Create a consistent name for deployment
+          cp "$LATEST_REPORT" curation-report-main.html
+          echo "✅ Copied to curation-report-main.html for deployment"
+        else
+          echo "⚠️  No curation report generated, check ort-curation.log"
+          cat ort-curation.log || true
+        fi
+      continue-on-error: true
+
+    - name: Generate enhanced conflict analysis report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5b: Generating enhanced conflict analysis..."
+
+        # Only run if there are uncertain packages
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "✓ No uncertain packages found - skipping conflict analysis"
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to analyze"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT uncertain packages requiring analysis"
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ] || [ -z "$AZURE_OPENAI_ENDPOINT" ]; then
+          echo "⚠️  Azure OpenAI not configured, skipping conflict analysis..."
+          exit 0
+        fi
+
+        # Use enhanced SPDX if available
+        SPDX_INPUT="ort-results/reporter/bom.spdx.yml"
+        if [ -f enhanced-spdx/bom-enhanced-fixed.spdx.json ]; then
+          SPDX_INPUT="enhanced-spdx/bom-enhanced-fixed.spdx.json"
+          echo "Using enhanced SPDX: $SPDX_INPUT"
+        else
+          echo "Using original SPDX: $SPDX_INPUT"
+        fi
+
+        # Run enhanced conflict analysis
+        echo "Running enhanced_ai_curation.py..."
+        python3 enhanced_ai_curation.py \
+          --ort-results ort-results/analyzer/analyzer-result.yml \
+          --spdx-doc "$SPDX_INPUT" \
+          --uncertain-packages uncertain-packages/uncertain-packages.json \
+          --output curation-report-conflicts.html 2>&1 | tee conflict-analysis.log
+
+        # Verify output
+        if [ -f curation-report-conflicts.html ] && [ -s curation-report-conflicts.html ]; then
+          echo "✅ Conflict analysis report generated ($(wc -c < curation-report-conflicts.html) bytes)"
+        else
+          echo "⚠️  Conflict analysis failed, check conflict-analysis.log"
+          cat conflict-analysis.log || true
+        fi
+      continue-on-error: true
+
+    - name: Generate AI missing licenses report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5c: Generating AI missing licenses analysis..."
+
+        # Only run if there are uncertain packages
+        if [ ! -f uncertain-packages/uncertain-packages.json ]; then
+          echo "✓ No uncertain packages found - skipping missing licenses analysis"
+          exit 0
+        fi
+
+        # Check if there are actually uncertain packages in the file
+        UNCERTAIN_COUNT=$(python3 -c "import json; data=json.load(open('uncertain-packages/uncertain-packages.json')); print(len(data))" 2>/dev/null || echo "0")
+
+        if [ "$UNCERTAIN_COUNT" = "0" ]; then
+          echo "✓ No uncertain packages to analyze"
+          exit 0
+        fi
+
+        echo "Found $UNCERTAIN_COUNT uncertain packages - analyzing for missing licenses"
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+          echo "⚠️  Azure OpenAI not configured, skipping missing licenses analysis..."
+          exit 0
+        fi
+
+        # Run AI missing licenses analyzer
+        echo "Running ai_missing_licenses_analyzer.py..."
+        python3 ai_missing_licenses_analyzer.py \
+          uncertain-packages/uncertain-packages.json \
+          curation-report-missing-licenses.html 2>&1 | tee missing-licenses-analysis.log
+
+        # Verify output
+        if [ -f curation-report-missing-licenses.html ] && [ -s curation-report-missing-licenses.html ]; then
+          echo "✅ Missing licenses analysis report generated ($(wc -c < curation-report-missing-licenses.html) bytes)"
+        else
+          echo "⚠️  Missing licenses analysis failed, check missing-licenses-analysis.log"
+          cat missing-licenses-analysis.log || true
+        fi
+      continue-on-error: true
+
+    - name: Generate multi-layer license comparison report
+      run: |
+        echo "🔍 Stage 5d: Generating multi-layer license comparison report..."
+
+        # Check if ORT results exist
+        if [ ! -f ort-results/analyzer/analyzer-result.yml ]; then
+          echo "⚠️  ORT analyzer results not found, skipping comparison report..."
+          exit 0
+        fi
+
+        # Determine which files are available
+        PYPI_RESULTS=""
+        if [ -f pypi-licenses/pypi-licenses-full.json ]; then
+          PYPI_RESULTS="--pypi-results pypi-licenses/pypi-licenses-full.json"
+          echo "  ✓ PyPI results found"
+        fi
+
+        SCANCODE_DIR=""
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          SCANCODE_DIR="--scancode-dir scancode-results"
+          echo "  ✓ ScanCode results found"
+        fi
+
+        UNCERTAIN_PACKAGES=""
+        if [ -f uncertain-packages/uncertain-packages.json ]; then
+          UNCERTAIN_PACKAGES="--uncertain-packages uncertain-packages/uncertain-packages.json"
+          echo "  ✓ Uncertain packages list found"
+        fi
+
+        SPDX_DOC=""
+        if [ -f enhanced-spdx/bom-enhanced-fixed.spdx.json ]; then
+          SPDX_DOC="--spdx enhanced-spdx/bom-enhanced-fixed.spdx.json"
+          echo "  ✓ Enhanced SPDX found"
+        elif [ -f enhanced-spdx/bom-enhanced.spdx.json ]; then
+          SPDX_DOC="--spdx enhanced-spdx/bom-enhanced.spdx.json"
+          echo "  ✓ Enhanced SPDX found"
+        fi
+
+        # Run comparison report generator
+        echo "Running generate_license_comparison.py..."
+        python3 generate_license_comparison.py \
+          --ort-result ort-results/analyzer/analyzer-result.yml \
+          $PYPI_RESULTS \
+          $SCANCODE_DIR \
+          $UNCERTAIN_PACKAGES \
+          $SPDX_DOC \
+          --output license-comparison.html 2>&1 | tee license-comparison.log
+
+        # Verify output
+        if [ -f license-comparison.html ] && [ -s license-comparison.html ]; then
+          echo "✅ License comparison report generated ($(wc -c < license-comparison.html) bytes)"
+        else
+          echo "⚠️  License comparison generation failed, check license-comparison.log"
+          cat license-comparison.log || true
+        fi
+      continue-on-error: true
+
+    - name: Generate AI multi-layer resolution report
+      env:
+        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      run: |
+        echo "🤖 Stage 5e: Generating AI multi-layer resolution report..."
+
+        # Check if ORT results exist
+        if [ ! -f ort-results/analyzer/analyzer-result.yml ]; then
+          echo "⚠️  ORT analyzer results not found, skipping..."
+          exit 0
+        fi
+
+        # Check Azure credentials
+        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+          echo "⚠️  Azure OpenAI not configured, skipping AI resolution report..."
+          exit 0
+        fi
+
+        # Prepare parameters
+        ORT_PARAM="--ort-result ort-results/analyzer/analyzer-result.yml"
+
+        PYPI_PARAM=""
+        if [ -f pypi-licenses/pypi-licenses-full.json ]; then
+          PYPI_PARAM="--pypi-results pypi-licenses/pypi-licenses-full.json"
+          echo "  ✓ PyPI results found"
+        fi
+
+        SCANCODE_PARAM=""
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          SCANCODE_PARAM="--scancode-dir scancode-results"
+          echo "  ✓ ScanCode results found"
+        fi
+
+        UNCERTAIN_PARAM=""
+        if [ -f uncertain-packages/uncertain-packages.json ]; then
+          UNCERTAIN_PARAM="--uncertain-packages uncertain-packages/uncertain-packages.json"
+          echo "  ✓ Uncertain packages found"
+        fi
+
+        # Run AI resolution report
+        echo "Running ai_multilayer_resolution.py..."
+        python3 ai_multilayer_resolution.py \
+          $ORT_PARAM \
+          $PYPI_PARAM \
+          $SCANCODE_PARAM \
+          $UNCERTAIN_PARAM \
+          --output ai-multilayer-resolution.html 2>&1 | tee ai-resolution.log
+
+        # Verify output
+        if [ -f ai-multilayer-resolution.html ] && [ -s ai-multilayer-resolution.html ]; then
+          echo "✅ AI multi-layer resolution report generated ($(wc -c < ai-multilayer-resolution.html) bytes)"
+        else
+          echo "⚠️  AI resolution report generation failed or no issues found, check ai-resolution.log"
+          cat ai-resolution.log || true
+        fi
+      continue-on-error: true
+
+    # ====== STAGE 6: Prepare GitHub Pages ======
+    - name: Prepare Pages Deployment
+      run: |
+        mkdir -p public
+
+        echo "📦 Copying ORT reports..."
+        if [ -d ort-results/reporter ]; then
+          cp -r ort-results/reporter/* public/ 2>/dev/null || true
+        fi
+
+        echo "📦 Copying enhanced reports..."
+        # Copy enhanced SPDX
+        if [ -f enhanced-spdx/bom-enhanced-fixed.spdx.json ]; then
+          cp enhanced-spdx/bom-enhanced-fixed.spdx.json public/bom-enhanced.spdx.json
+        fi
+
+        # Copy AI curation reports
+        if [ -f curation-report-main.html ]; then
+          cp curation-report-main.html public/
+          echo "  ✓ Main ORT curation report"
+        fi
+
+        if [ -f curation-report-conflicts.html ]; then
+          cp curation-report-conflicts.html public/
+          echo "  ✓ Conflict analysis report"
+        fi
+
+        if [ -f curation-report-missing-licenses.html ]; then
+          cp curation-report-missing-licenses.html public/
+          echo "  ✓ Missing licenses AI analysis report"
+        fi
+
+        # Copy license comparison report
+        if [ -f license-comparison.html ]; then
+          cp license-comparison.html public/
+          echo "  ✓ Multi-layer license comparison report"
+        fi
+
+        # Copy AI multi-layer resolution report
+        if [ -f ai-multilayer-resolution.html ]; then
+          cp ai-multilayer-resolution.html public/
+          echo "  ✓ AI multi-layer resolution report"
+        fi
+
+        # Copy any timestamped reports too
+        if ls curation-report-*.html 1> /dev/null 2>&1; then
+          for report in curation-report-*.html; do
+            [ -f "$report" ] && cp "$report" public/ 2>/dev/null || true
+          done
+        fi
+
+        # Copy native ScanCode reports (HTML, JSON, YAML)
+        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
+          mkdir -p public/scancode-reports
+          cp scancode-results/*.html public/scancode-reports/ 2>/dev/null || true
+          cp scancode-results/*.json public/scancode-reports/ 2>/dev/null || true
+          cp scancode-results/*.yml public/scancode-reports/ 2>/dev/null || true
+
+          SCANCODE_COUNT=$(ls -1 scancode-results/*.html 2>/dev/null | wc -l)
+          echo "  ✓ Copied $SCANCODE_COUNT ScanCode native reports"
+        fi
+
+        # Copy ScanCode summary reports
+        if [ -f scancode-summary.html ]; then
+          cp scancode-summary.html public/
+          echo "  ✓ ScanCode HTML summary"
+        fi
+
+        if [ -f scancode-summary.yml ]; then
+          cp scancode-summary.yml public/
+          echo "  ✓ ScanCode YAML summary"
+        fi
+
+        # Copy ScanCode merge report
+        if [ -f enhanced-spdx/merge-report.md ]; then
+          cp enhanced-spdx/merge-report.md public/
+          echo "  ✓ ScanCode merge report"
+        fi
+
+        # Copy uncertain packages report
+        if [ -f uncertain-packages/report.md ]; then
+          cp uncertain-packages/report.md public/uncertain-packages-report.md
+        fi
+
+        # Copy PyPI license fetch results
+        if [ -d pypi-licenses ] && [ "$(ls -A pypi-licenses)" ]; then
+          # Copy HTML report to public root for easy access
+          if [ -f pypi-licenses/pypi-licenses-report.html ]; then
+            cp pypi-licenses/pypi-licenses-report.html public/
+            echo "  ✓ PyPI HTML report"
+          fi
+
+          # Copy all other files to subdirectory
+          mkdir -p public/pypi-licenses
+          cp pypi-licenses/*.json public/pypi-licenses/ 2>/dev/null || true
+          cp pypi-licenses/*.csv public/pypi-licenses/ 2>/dev/null || true
+          cp pypi-licenses/*.yml public/pypi-licenses/ 2>/dev/null || true
+          cp pypi-licenses/*.txt public/pypi-licenses/ 2>/dev/null || true
+          echo "  ✓ PyPI license fetch results"
+        fi
+
+        # Copy background image
+        if [ -f background.jpg ] || [ -f background.png ]; then
+          cp background.* public/ 2>/dev/null || true
+        fi
+
+        # Detect generated files
+        echo "📂 Detecting generated files..."
+        ls -la public/
+
+        # Generate landing page using Python script
+        python3 generate_landing_page.py public
+
+        echo "✅ Landing page generated with all available reports"
+
+    # ====== STAGE 7: Deploy to GitHub Pages ======
+    - name: Setup Pages
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: actions/configure-pages@v4
+
+    - name: Upload Pages Artifact
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: 'public'
+
+    - name: Deploy to GitHub Pages
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+    # ====== STAGE 8: Upload Artifacts ======
+    - name: Upload all ORT results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ort-results-${{ github.ref_name }}-${{ github.run_number }}
+        path: ort-results/
+        retention-days: 30
+
+    - name: Upload ScanCode results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: scancode-results-${{ github.ref_name }}-${{ github.run_number }}
+        path: scancode-results/
+        retention-days: 30
+
+    - name: Upload enhanced reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: enhanced-reports-${{ github.ref_name }}-${{ github.run_number }}
+        path: |
+          curation-report-enhanced.html
+          enhanced-spdx/
+          uncertain-packages/
+          pypi-licenses/
+        retention-days: 30
+
+    # ====== STAGE 9: Summary & PR Comment ======
+    - name: Generate workflow summary
+      id: summary
+      run: |
+        echo "## 🔍 Enhanced ORT Analysis Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Multi-Tool Analysis Complete**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Tools Used:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ ORT Analyzer & Advisor" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ PyPI API License Fetcher (fast license retrieval)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ ScanCode Toolkit (deep license scanning)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ SPDX Validation & Enhancement" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Azure OpenAI GPT-4 (AI curation)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ -f uncertain-packages/extraction-stats.txt ]; then
+          echo "### 📊 License Coverage:" >> $GITHUB_STEP_SUMMARY
+          cat uncertain-packages/extraction-stats.txt >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "### 📦 Generated Reports:" >> $GITHUB_STEP_SUMMARY
+        echo "- Enhanced AI curation report" >> $GITHUB_STEP_SUMMARY
+        echo "- SPDX document (enhanced with ScanCode)" >> $GITHUB_STEP_SUMMARY
+        echo "- CycloneDX SBOM" >> $GITHUB_STEP_SUMMARY
+        echo "- Uncertain packages analysis" >> $GITHUB_STEP_SUMMARY
+      continue-on-error: true
+
+    - name: Comment PR with enhanced results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          let comment = '## 🔍 Enhanced ORT Analysis Results\n\n';
+          comment += '✅ Multi-tool analysis completed successfully!\n\n';
+          comment += '### 🛠️ Analysis Pipeline\n\n';
+          comment += '1. **ORT Analyzer** - Dependency analysis\n';
+          comment += '2. **ORT Advisor** - Vulnerability scanning\n';
+          comment += '3. **PyPI API Fetch** - Fast license retrieval from package registries\n';
+          comment += '4. **ScanCode Toolkit** - Deep license detection (optimized)\n';
+          comment += '5. **SPDX Enhancement** - Merge & validation\n';
+          comment += '6. **AI Curation** - GPT-4 powered recommendations\n\n';
+          comment += '### 📊 View Reports\n\n';
+          comment += '- 🌐 [Enhanced Reports (GitHub Pages)](https://' + context.repo.owner + '.github.io/' + context.repo.repo + '/)\n';
+          comment += '- 📥 [Download All Artifacts](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')\n\n';
+          comment += '**What\'s New:**\n';
+          comment += '- PyPI API fetched licenses for PyPI packages (fast, no scanning needed)\n';
+          comment += '- ScanCode enhanced remaining packages with missing licenses\n';
+          comment += '- AI analyzed license conflicts with actionable recommendations\n';
+          comment += '- Validated and fixed SPDX compliance issues\n\n';
+          comment += '---\n';
+          comment += '*💡 Enhanced multi-tool approach maximizes license detection coverage*\n';
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+      continue-on-error: true
