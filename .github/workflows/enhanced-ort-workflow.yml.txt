@@ -534,64 +534,6 @@ jobs:
         fi
       continue-on-error: true
 
-    - name: Generate AI multi-layer resolution report
-      env:
-        AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-        AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-      run: |
-        echo "🤖 Stage 5e: Generating AI multi-layer resolution report..."
-
-        # Check if ORT results exist
-        if [ ! -f ort-results/analyzer/analyzer-result.yml ]; then
-          echo "⚠️  ORT analyzer results not found, skipping..."
-          exit 0
-        fi
-
-        # Check Azure credentials
-        if [ -z "$AZURE_OPENAI_API_KEY" ]; then
-          echo "⚠️  Azure OpenAI not configured, skipping AI resolution report..."
-          exit 0
-        fi
-
-        # Prepare parameters
-        ORT_PARAM="--ort-result ort-results/analyzer/analyzer-result.yml"
-
-        PYPI_PARAM=""
-        if [ -f pypi-licenses/pypi-licenses-full.json ]; then
-          PYPI_PARAM="--pypi-results pypi-licenses/pypi-licenses-full.json"
-          echo "  ✓ PyPI results found"
-        fi
-
-        SCANCODE_PARAM=""
-        if [ -d scancode-results ] && [ "$(ls -A scancode-results)" ]; then
-          SCANCODE_PARAM="--scancode-dir scancode-results"
-          echo "  ✓ ScanCode results found"
-        fi
-
-        UNCERTAIN_PARAM=""
-        if [ -f uncertain-packages/uncertain-packages.json ]; then
-          UNCERTAIN_PARAM="--uncertain-packages uncertain-packages/uncertain-packages.json"
-          echo "  ✓ Uncertain packages found"
-        fi
-
-        # Run AI resolution report
-        echo "Running ai_multilayer_resolution.py..."
-        python3 ai_multilayer_resolution.py \
-          $ORT_PARAM \
-          $PYPI_PARAM \
-          $SCANCODE_PARAM \
-          $UNCERTAIN_PARAM \
-          --output ai-multilayer-resolution.html 2>&1 | tee ai-resolution.log
-
-        # Verify output
-        if [ -f ai-multilayer-resolution.html ] && [ -s ai-multilayer-resolution.html ]; then
-          echo "✅ AI multi-layer resolution report generated ($(wc -c < ai-multilayer-resolution.html) bytes)"
-        else
-          echo "⚠️  AI resolution report generation failed or no issues found, check ai-resolution.log"
-          cat ai-resolution.log || true
-        fi
-      continue-on-error: true
-
     # ====== STAGE 6: Prepare GitHub Pages ======
     - name: Prepare Pages Deployment
       run: |
@@ -628,12 +570,6 @@ jobs:
         if [ -f license-comparison.html ]; then
           cp license-comparison.html public/
           echo "  ✓ Multi-layer license comparison report"
-        fi
-
-        # Copy AI multi-layer resolution report
-        if [ -f ai-multilayer-resolution.html ]; then
-          cp ai-multilayer-resolution.html public/
-          echo "  ✓ AI multi-layer resolution report"
         fi
 
         # Copy any timestamped reports too

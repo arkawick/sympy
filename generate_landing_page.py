@@ -16,6 +16,7 @@ def generate_landing_page(public_dir='public'):
     ai_main_report = ''
     ai_conflict_report = ''
     ai_missing_licenses = ''
+    ai_resolution_report = ''
     license_comparison = ''
     cyclonedx = ''
     spdx_enhanced = ''
@@ -45,6 +46,9 @@ def generate_landing_page(public_dir='public'):
 
     if (public_path / 'license-comparison.html').exists():
         license_comparison = 'license-comparison.html'
+
+    if (public_path / 'ai-multilayer-resolution.html').exists():
+        ai_resolution_report = 'ai-multilayer-resolution.html'
 
     if (public_path / 'bom.cyclonedx.json').exists():
         cyclonedx = 'bom.cyclonedx.json'
@@ -85,6 +89,7 @@ def generate_landing_page(public_dir='public'):
     print(f"  AI Main Report: {ai_main_report or 'N/A'}")
     print(f"  AI Conflict Report: {ai_conflict_report or 'N/A'}")
     print(f"  AI Missing Licenses: {ai_missing_licenses or 'N/A'}")
+    print(f"  AI Resolution Report: {ai_resolution_report or 'N/A'}")
     print(f"  License Comparison: {license_comparison or 'N/A'}")
     print(f"  CycloneDX: {cyclonedx or 'N/A'}")
     print(f"  SPDX Enhanced: {spdx_enhanced or 'N/A'}")
@@ -232,6 +237,16 @@ def generate_landing_page(public_dir='public'):
         <div class="report-icon">📊</div>
         <div class="report-title">Multi-Layer License Comparison <span class="badge">ALL SOURCES</span></div>
         <div class="report-desc">Comprehensive license comparison from ORT, PyPI API, and ScanCode with conflict detection</div>
+      </a>
+'''
+
+    # Add AI Multi-Layer Resolution Report
+    if ai_resolution_report:
+        html += f'''
+      <a href="{ai_resolution_report}" class="report-card highlight">
+        <div class="report-icon">🤖</div>
+        <div class="report-title">AI Multi-Layer Resolution <span class="badge">SMART ANALYSIS</span></div>
+        <div class="report-desc">AI-powered intelligent resolution for conflicts and missing licenses with actionable recommendations</div>
       </a>
 '''
 
