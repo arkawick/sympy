@@ -510,6 +510,13 @@ See `AZURE_OPENAI_SETUP.md` for detailed setup instructions.
 - Max tokens: 1000 per package
 - Limit: First 15 packages to avoid token/cost limits
 
+**AI Multi-Layer Resolution (`ai_multilayer_resolution.py`):**
+- Model: `gpt-4.1-mini` (default, configurable via `AZURE_OPENAI_MODEL`)
+- API Version: `2025-01-01-preview` (matches `ort_curation_script_html.py`)
+- Temperature: 0.3 (deterministic)
+- Max tokens: 800 per analysis
+- Limit: 15 conflicts + 10 missing packages per run
+
 ### GitHub Pages Deployment
 
 **Triggers:**

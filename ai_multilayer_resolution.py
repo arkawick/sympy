@@ -52,8 +52,8 @@ class MultiLayerLicenseResolver:
     def _init_azure_openai(self):
         """Initialize Azure OpenAI client"""
         api_key = os.environ.get('AZURE_OPENAI_API_KEY')
-        endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT')
-        self.model_deployment = os.environ.get('AZURE_OPENAI_MODEL', 'gpt-4o-mini')
+        endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT', 'https://ltts-cariad-ddd-mvp-ai-foundry.cognitiveservices.azure.com')
+        self.model_deployment = os.environ.get('AZURE_OPENAI_MODEL', 'gpt-4.1-mini')
 
         if not api_key:
             print("⚠️  AZURE_OPENAI_API_KEY not set - AI analysis will be skipped")
@@ -66,7 +66,7 @@ class MultiLayerLicenseResolver:
         try:
             self.client = AzureOpenAI(
                 api_key=api_key,
-                api_version="2024-08-01-preview",
+                api_version="2025-01-01-preview",
                 azure_endpoint=endpoint
             )
             print(f"✓ Azure OpenAI client initialized")

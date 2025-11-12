@@ -38,14 +38,15 @@ This means the model deployment name in the script doesn't match your actual Azu
 
 Based on your error, you might be using one of these:
 
-**For the main ORT curation script** (`ort_curation_script_html.py`):
-- Uses: `gpt-4.1-mini` (line 576 in the script)
-- You should use the SAME deployment name for consistency
+**For ALL AI-powered scripts** (consistency is key):
+- Main ORT curation script uses: `gpt-4.1-mini` (line 576 in the script)
+- AI Multi-Layer Resolution uses: `gpt-4.1-mini` (default, line 56)
+- You should use the SAME deployment name: `gpt-4.1-mini`
 
 **Typical deployment names:**
+- `gpt-4.1-mini` (recommended - used by working scripts)
 - `gpt-4o-mini` (if you created it recently)
 - `gpt-4-mini` (alternative naming)
-- `gpt-4.1-mini` (if using older version)
 - `gpt-35-turbo` (if using GPT-3.5)
 - Custom names like: `my-compliance-model`, `ort-analysis-model`, etc.
 
@@ -62,9 +63,14 @@ You need these **3 secrets** in GitHub:
 **Example values:**
 ```
 AZURE_OPENAI_API_KEY: abc123def456...
-AZURE_OPENAI_ENDPOINT: https://your-resource.openai.azure.com/
+AZURE_OPENAI_ENDPOINT: https://ltts-cariad-ddd-mvp-ai-foundry.cognitiveservices.azure.com/
 AZURE_OPENAI_MODEL: gpt-4.1-mini
 ```
+
+**Important Configuration Details:**
+- API Version: Scripts use `2025-01-01-preview` (latest stable version)
+- Deployment Name: `gpt-4.1-mini` is the default across all AI scripts
+- If you have a different deployment name in Azure Portal, set `AZURE_OPENAI_MODEL` to match it
 
 ## Testing Locally
 
