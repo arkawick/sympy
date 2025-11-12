@@ -53,20 +53,27 @@ class MultiLayerLicenseResolver:
         """Initialize Azure OpenAI client"""
         api_key = os.environ.get('AZURE_OPENAI_API_KEY')
         endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT')
+        self.model_deployment = os.environ.get('AZURE_OPENAI_MODEL', 'gpt-4o-mini')
 
         if not api_key:
             print("⚠️  AZURE_OPENAI_API_KEY not set - AI analysis will be skipped")
+            return
+
+        if not endpoint:
+            print("⚠️  AZURE_OPENAI_ENDPOINT not set - AI analysis will be skipped")
             return
 
         try:
             self.client = AzureOpenAI(
                 api_key=api_key,
                 api_version="2024-08-01-preview",
-                azure_endpoint=endpoint or "https://your-endpoint.openai.azure.com/"
+                azure_endpoint=endpoint
             )
-            print("✓ Azure OpenAI client initialized")
+            print(f"✓ Azure OpenAI client initialized")
+            print(f"  Using model deployment: {self.model_deployment}")
         except Exception as e:
             print(f"⚠️  Failed to initialize Azure OpenAI: {e}")
+            self.client = None
 
     def load_all_data(self):
         """Load data from all sources"""
@@ -345,7 +352,7 @@ Provide a concise, actionable response in JSON format:
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model_deployment,
                 messages=[
                     {"role": "system", "content": "You are an expert in open-source license compliance and SPDX identifiers. Provide accurate, actionable advice."},
                     {"role": "user", "content": prompt}
