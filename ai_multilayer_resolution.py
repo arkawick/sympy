@@ -41,8 +41,9 @@ class MultiLayerLicenseResolver:
 
         self.packages = {}
         self.uncertain_packages = {}
-        self.conflict_packages = []
-        self.missing_packages = []
+        self.resolved_packages = []  # Packages with consistent licenses
+        self.conflict_packages = []  # Packages with conflicting licenses
+        self.missing_packages = []   # Packages with no licenses found
 
         # Azure OpenAI client
         self.client = None
@@ -210,8 +211,8 @@ class MultiLayerLicenseResolver:
         print(f"   ✓ Loaded ScanCode licenses for {count} packages")
 
     def _identify_conflicts_and_missing(self):
-        """Identify packages with conflicts or missing licenses"""
-        print("\n🔍 Analyzing for conflicts and missing licenses...")
+        """Identify packages as resolved, conflicted, or missing"""
+        print("\n🔍 Analyzing license status across all sources...")
 
         for pkg_id, pkg_info in self.packages.items():
             ort_lic = pkg_info['ort_license']
@@ -227,18 +228,26 @@ class MultiLayerLicenseResolver:
             if scancode_lic:
                 licenses.append(scancode_lic)
 
-            # Check for conflicts
-            if len(licenses) > 1:
-                # Normalize for comparison
-                normalized = {lic.upper().replace('-', '').replace(' ', '') for lic in licenses}
-                if len(normalized) > 1:
+            # Categorize package
+            if len(licenses) == 0:
+                # No license found anywhere
+                self.missing_packages.append(pkg_info)
+            elif len(licenses) == 1:
+                # Single license found - resolved
+                pkg_info['resolved_license'] = licenses[0]
+                self.resolved_packages.append(pkg_info)
+            else:
+                # Multiple licenses - check for conflicts
+                normalized = {lic.upper().replace('-', '').replace(' ', '').replace('_', '') for lic in licenses}
+                if len(normalized) == 1:
+                    # Same license, just different formatting - resolved
+                    pkg_info['resolved_license'] = licenses[0]
+                    self.resolved_packages.append(pkg_info)
+                else:
                     # Real conflict
                     self.conflict_packages.append(pkg_info)
 
-            # Check for missing
-            elif len(licenses) == 0:
-                self.missing_packages.append(pkg_info)
-
+        print(f"   ✅ Found {len(self.resolved_packages)} packages with consistent licenses")
         print(f"   ⚠️  Found {len(self.conflict_packages)} packages with license conflicts")
         print(f"   ❌ Found {len(self.missing_packages)} packages with missing licenses")
 
@@ -295,7 +304,7 @@ Provide a concise, actionable response in JSON format:
     "verification_steps": ["step 1", "step 2"]
 }}"""
         else:  # Missing
-            prompt = f"""You are a software license compliance expert. This package has missing license information across all detection methods:
+            prompt = f"""You are a software license compliance expert with access to knowledge about open-source packages. This package has NO license information found across all automated detection methods:
 
 Package: {pkg_name} ({pkg_type})
 Version: {package['version']}
@@ -305,23 +314,33 @@ ATTEMPTED LICENSE DETECTION:
 - PyPI API: {pypi_lic}
 - ScanCode (source scan): {scancode_lic}
 
-Homepage: {homepage}
-Repository: {repo}
-Description: {package['description'][:200]}
+Package Information:
+- Homepage: {homepage or 'Not available'}
+- Repository: {repo or 'Not available'}
+- Description: {package['description'][:200] if package['description'] else 'Not available'}
 
-TASK: Suggest the most likely license based on:
-1. Package name patterns and ecosystem
-2. Common licenses for this type of package
-3. Repository/homepage clues
+TASK: Research and suggest the most likely license by analyzing:
+1. **Repository URL patterns** (GitHub/GitLab/Bitbucket) - if provided, infer what the LICENSE file would contain
+2. **Package ecosystem standards** (PyPI, NPM, Maven typical licenses)
+3. **Package name patterns** (common framework/library conventions)
+4. **Organization/author patterns** (known publishers and their typical licenses)
+5. **Similar packages** in the same ecosystem
 
-Provide a concise response in JSON format:
+Based on your knowledge of open-source licensing:
+- Suggest the MOST LIKELY license this package would have
+- Explain WHERE to find the actual license (GitHub repo path, package registry, etc.)
+- Provide SPECIFIC URLs to check (construct GitHub raw LICENSE URL if repo is known)
+
+Provide a concise, actionable response in JSON format:
 {{
-    "suggested_license": "SPDX identifier or description",
-    "reasoning": "Why this is likely",
+    "suggested_license": "SPDX identifier (e.g., MIT, Apache-2.0, BSD-3-Clause)",
+    "reasoning": "Why this license is most likely based on package patterns/ecosystem",
     "confidence": "High|Medium|Low",
-    "action": "How to verify manually",
-    "verification_steps": ["step 1", "step 2"],
-    "risk_level": "High|Medium|Low"
+    "github_license_url": "Direct URL to LICENSE file if repo is GitHub (or empty string)",
+    "action": "Specific steps to find and verify the license",
+    "verification_steps": ["Check specific URL/path", "Verify in package registry", "etc"],
+    "risk_level": "High|Medium|Low",
+    "alternative_licenses": ["other possible licenses to check"]
 }}"""
 
         try:
@@ -399,8 +418,8 @@ Provide a concise response in JSON format:
                 'analysis': analysis
             })
 
-        # Generate HTML
-        html = self._generate_html_content(conflict_analyses, missing_analyses)
+        # Generate HTML (now includes resolved packages)
+        html = self._generate_html_content(self.resolved_packages, conflict_analyses, missing_analyses)
 
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -409,13 +428,14 @@ Provide a concise response in JSON format:
             f.write(html)
 
         print(f"\n✅ Report generated: {output_file}")
+        print(f"   Resolved packages: {len(self.resolved_packages)}")
         print(f"   Conflicts analyzed: {len(conflict_analyses)}")
         print(f"   Missing analyzed: {len(missing_analyses)}")
 
-    def _generate_html_content(self, conflict_analyses: List[Dict], missing_analyses: List[Dict]) -> str:
+    def _generate_html_content(self, resolved_packages: List[Dict], conflict_analyses: List[Dict], missing_analyses: List[Dict]) -> str:
         """Generate HTML content for the report"""
 
-        total_issues = len(conflict_analyses) + len(missing_analyses)
+        total_packages = len(resolved_packages) + len(conflict_analyses) + len(missing_analyses)
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -659,16 +679,63 @@ Provide a concise response in JSON format:
 
         <div class="stats">
             <div class="stat-card">
-                <h3 class="stat-total">{total_issues}</h3>
-                <p>Total Issues</p>
+                <h3 class="stat-total">{total_packages}</h3>
+                <p>Total Packages</p>
+            </div>
+            <div class="stat-card">
+                <h3 style="color: #10b981;">{len(resolved_packages)}</h3>
+                <p>Resolved ({len(resolved_packages)/total_packages*100:.1f}%)</p>
             </div>
             <div class="stat-card">
                 <h3 class="stat-conflicts">{len(conflict_analyses)}</h3>
-                <p>License Conflicts</p>
+                <p>Conflicts ({len(conflict_analyses)/total_packages*100:.1f}%)</p>
             </div>
             <div class="stat-card">
                 <h3 class="stat-missing">{len(missing_analyses)}</h3>
-                <p>Missing Licenses</p>
+                <p>Missing ({len(missing_analyses)/total_packages*100:.1f}%)</p>
+            </div>
+        </div>
+"""
+
+        # Resolved packages section (show first - the good news!)
+        if resolved_packages:
+            html += """
+        <div class="section">
+            <h2 class="section-title">✅ Resolved Packages</h2>
+            <p style="margin-bottom: 20px; color: #6b7280;">Packages with consistent license information across all sources</p>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px;">
+"""
+            for pkg in resolved_packages:
+                resolved_lic = pkg.get('resolved_license', 'Unknown')
+                ort_lic = pkg['ort_license']
+                pypi_lic = pkg['pypi_license']
+                scancode_lic = pkg['scancode_license']
+
+                # Determine which sources have the license
+                sources = []
+                if ort_lic and ort_lic != 'NOASSERTION':
+                    sources.append('ORT')
+                if pypi_lic:
+                    sources.append('PyPI')
+                if scancode_lic:
+                    sources.append('ScanCode')
+
+                sources_text = ' + '.join(sources)
+
+                html += f"""
+                <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 15px; border-radius: 6px;">
+                    <div style="font-weight: 600; color: #1f2937; margin-bottom: 5px;">{pkg['display_name']}</div>
+                    <div style="font-size: 0.85em; color: #6b7280; margin-bottom: 8px;">{pkg['type']} v{pkg['version']}</div>
+                    <div style="background: white; padding: 8px; border-radius: 4px; margin-bottom: 5px;">
+                        <div style="font-family: 'Courier New', monospace; color: #065f46; font-weight: 600;">{resolved_lic}</div>
+                    </div>
+                    <div style="font-size: 0.8em; color: #059669;">
+                        Confirmed by: {sources_text}
+                    </div>
+                </div>
+"""
+
+            html += """
             </div>
         </div>
 """
@@ -790,6 +857,8 @@ Provide a concise response in JSON format:
                 action = analysis.get('action', 'Manual investigation required')
                 risk = analysis.get('risk_level', 'High')
                 verification_steps = analysis.get('verification_steps', [])
+                github_license_url = analysis.get('github_license_url', '')
+                alternative_licenses = analysis.get('alternative_licenses', [])
 
                 html += f"""
             <div class="package-card missing">
@@ -829,6 +898,14 @@ Provide a concise response in JSON format:
                     </div>
 """
 
+                if alternative_licenses:
+                    alt_licenses_text = ', '.join(alternative_licenses)
+                    html += f"""
+                    <div class="ai-recommendation">
+                        <strong>Alternative Licenses to Check:</strong> {alt_licenses_text}
+                    </div>
+"""
+
                 if verification_steps:
                     html += """
                     <div class="verification-steps">
@@ -846,10 +923,13 @@ Provide a concise response in JSON format:
                 </div>
 """
 
-                if pkg['homepage'] or pkg['repository']:
+                # Links section for missing packages - include GitHub LICENSE URL if AI provided it
+                if pkg['homepage'] or pkg['repository'] or github_license_url:
                     html += """
                 <div class="links">
 """
+                    if github_license_url:
+                        html += f"""                    <a href="{github_license_url}" class="link-btn" target="_blank" style="background: #10b981;">📄 GitHub LICENSE</a>"""
                     if pkg['homepage']:
                         html += f"""                    <a href="{pkg['homepage']}" class="link-btn" target="_blank">Homepage</a>"""
                     if pkg['repository']:
@@ -928,10 +1008,22 @@ def main():
     resolver.load_all_data()
 
     # Check if we have issues to analyze
+    total_packages = len(resolver.resolved_packages) + len(resolver.conflict_packages) + len(resolver.missing_packages)
+
+    if total_packages == 0:
+        print("\n⚠️  No packages found to analyze!")
+        sys.exit(1)
+
+    print(f"\n📊 Package Analysis Summary:")
+    print(f"   Total packages: {total_packages}")
+    print(f"   ✅ Resolved: {len(resolver.resolved_packages)}")
+    print(f"   ⚠️  Conflicts: {len(resolver.conflict_packages)}")
+    print(f"   ❌ Missing: {len(resolver.missing_packages)}")
+
+    # If only resolved packages, create a simple report showing success
     if not resolver.conflict_packages and not resolver.missing_packages:
-        print("\n✅ No license conflicts or missing licenses found!")
-        print("   All packages have consistent license information.")
-        sys.exit(0)
+        print("\n✅ Excellent! All packages have consistent license information.")
+        print("   Generating report showing resolved packages...")
 
     # Generate report
     resolver.generate_html_report(args.output)
